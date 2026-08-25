@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { config } from "./config.js";
 import { CHRONO24_USER_AGENT } from "./userAgent.js";
@@ -27,6 +28,26 @@ export class Fetcher {
   private lastRequestAt = 0;
   private warmedUp = false;
 
+  private async launch(base: Record<string, unknown>, channel?: string): Promise<BrowserContext> {
+    try {
+      return await chromium.launchPersistentContext(config.profileDir, {
+        ...base,
+        ...(channel ? { channel } : {}),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/ProcessSingleton|SingletonLock/i.test(msg)) throw err;
+      for (const lock of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+        fs.rmSync(path.join(config.profileDir, lock), { force: true });
+      }
+      console.error("[fetcher] removed stale browser singleton lock");
+      return chromium.launchPersistentContext(config.profileDir, {
+        ...base,
+        ...(channel ? { channel } : {}),
+      });
+    }
+  }
+
   private async start() {
     if (this.context) return;
     fs.mkdirSync(config.profileDir, { recursive: true });
@@ -38,22 +59,19 @@ export class Fetcher {
       args: ["--disable-blink-features=AutomationControlled"],
       ignoreDefaultArgs: ["--enable-automation"],
     };
-    try {
-      if (config.chromeChannel) {
-        this.context = await chromium.launchPersistentContext(config.profileDir, {
-          ...base,
-          channel: "chrome",
-        });
+    if (config.chromeChannel) {
+      try {
+        this.context = await this.launch(base, "chrome");
         console.error("[fetcher] launched Google Chrome");
+      } catch (err) {
+        console.error(
+          `[fetcher] Google Chrome unavailable (${err instanceof Error ? err.message : err}), falling back to bundled Chromium`
+        );
       }
-    } catch (err) {
-      console.error(
-        `[fetcher] Google Chrome unavailable (${err instanceof Error ? err.message : err}), falling back to bundled Chromium`
-      );
     }
     if (!this.context) {
       try {
-        this.context = await chromium.launchPersistentContext(config.profileDir, base);
+        this.context = await this.launch(base);
       } catch (err) {
         throw new Error(
           `No browser available. Install Google Chrome, or run "npx playwright install chromium" for the bundled fallback (${err instanceof Error ? err.message : err})`
