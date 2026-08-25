@@ -26,6 +26,13 @@ export const searchInput = {
     .default("newest")
     .describe("Sort order"),
   page: z.number().int().min(1).optional().describe("1-based page number (60 results per page)"),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(60)
+    .optional()
+    .describe("Cap the number of listings returned (1-60); useful for shortlisting without parsing a full page"),
   certified: z.boolean().optional().describe("Only Chrono24 Certified listings"),
 };
 

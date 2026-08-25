@@ -15,6 +15,12 @@ npm run smoke     # LIVE end-to-end test: spawns server, lists tools, searches, 
 node build/index.js   # run the server manually on stdio
 ```
 
+Smoke overrides for testing a published package instead of the local build:
+
+```bash
+SMOKE_COMMAND=npx SMOKE_ARGS='["-y","chrono24-mcp@latest"]' SMOKE_CWD=/tmp npm run smoke
+```
+
 There are no unit tests yet. Do NOT add live-network tests to CI: GitHub runners' IPs are blocked by Cloudflare. Parser tests must use recorded HTML fixtures if introduced.
 
 ## Architecture
@@ -47,7 +53,7 @@ src/tools/schemas.ts   Zod input schemas (single source of truth for tool inputs
 
 ## Releases
 
-Automated by release-please + npm trusted publishing (see `.github/workflows/release.yml`). Commit messages MUST follow Conventional Commits: `feat:` bumps minor, `fix:` bumps patch, `!` = breaking/major, other prefixes release nothing. Never edit version in package.json manually; never push tags.
+Automated by release-please + npm trusted publishing (see `.github/workflows/release.yml`). Commit messages MUST follow Conventional Commits: `feat:` bumps minor, `fix:` bumps patch, `!` = breaking/major, other prefixes release nothing. The version base is pinned in `.release-please-manifest.json` - never edit version in package.json manually; never push tags.
 
 ## Style
 

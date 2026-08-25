@@ -94,7 +94,8 @@ server.tool(
       });
       const res = await cachedFetch(url, config.searchCacheTtlS);
       const parsed = parseSearchResults(res.html, res.finalUrl, args.page ?? 1);
-      return ok(parsed);
+      const listings = args.limit ? parsed.listings.slice(0, args.limit) : parsed.listings;
+      return ok({ ...parsed, listings, count: listings.length });
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err), hintFor(err));
     }

@@ -15,13 +15,9 @@ get_watch("48091925")
 
 Chrono24 has no public API and sits behind a Cloudflare managed challenge that blocks plain HTTP (403). This server drives a **real Chrome via Playwright with a persistent profile**, so the Cloudflare clearance cookie is earned once and reused across restarts. Requests are serialized with ~3.5s spacing plus jitter to stay polite; responses are cached (search 3 min, details 30 min).
 
-## Requirements
-
-- Node >= 20
-- Google Chrome installed (recommended). Without it, install the bundled-browser fallback once: `npx playwright install chromium`.
-- First run may take ~15-30s to clear the Cloudflare challenge.
-
 ## Setup
+
+Requires Node >= 20 and Google Chrome (the fallback bundled Chromium needs a one-time `npx playwright install chromium`). First run may take ~15-30s to clear the Cloudflare challenge.
 
 No repo clone needed - run straight from npm with `npx`.
 
@@ -102,27 +98,27 @@ npm install && npm run build && npm run smoke
 
 ## Tools
 
-| Tool | Description |
-| --- | --- |
-| `search_listings` | Search with query + filters (brand id, reference, price range, condition, year, seller countries, certified), sort (`relevance`, `price_asc`, `price_desc`, `newest`, `popularity`) and paging. Returns up to 60 cards/page with id, url, title, USD price, location, seller type, thumbnail. |
-| `get_watch` | Full detail for one listing id: reference, condition, year, movement/caliber/power reserve, case material/diameter, scope of delivery, location, description, all photo URLs, canonical URL, seller ids. |
-| `get_watches` | Batch detail for up to 10 ids. Sequential and polite (~4s per uncached id); per-id failures don't break the batch. |
+| Tool              | Description                                                                                                                                                                                                                                                                                                                  |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_listings` | Search with query + filters (brand id, reference, price range, condition, year, seller countries, certified), sort (`relevance`, `price_asc`, `price_desc`, `newest`, `popularity`), paging and an optional `limit` (1-60) for shortlisting. Returns cards with id, url, title, USD price, location, seller type, thumbnail. |
+| `get_watch`       | Full detail for one listing id: reference, condition, year, movement/caliber/power reserve, case material/diameter, scope of delivery, location, description, all photo URLs, canonical URL, seller ids.                                                                                                                     |
+| `get_watches`     | Batch detail for up to 10 ids. Sequential and polite (~4s per uncached id); per-id failures don't break the batch.                                                                                                                                                                                                           |
 
 All prices are normalized to USD (`currencyId=USD`). Empty result sets are valid outcomes, not errors.
 
 ## Environment variables
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `REQUEST_DELAY_MS` | `3500` | Min spacing between Chrono24 requests. Raise it if you ever see challenges. |
-| `HEADLESS` | `true` | Set `false` to run a visible browser (useful when a challenge needs manual completion once). |
-| `CHROME_CHANNEL` | `true` | Prefer installed Google Chrome; set `false` to force bundled Chromium. |
-| `PROFILE_DIR` | `~/.cache/chrono24-mcp/profile` | Browser profile holding the Cloudflare clearance cookie. |
-| `SEARCH_CACHE_TTL_S` | `180` | Search cache TTL. |
-| `DETAIL_CACHE_TTL_S` | `1800` | Detail cache TTL. |
-| `MAX_BATCH` | `10` | Cap for `get_watches`. |
-| `CURRENCY_ID` | `USD` | Price normalization currency. |
-| `DEBUG` | `false` | Verbose fetch logging to stderr. |
+| Variable             | Default                         | Purpose                                                                                      |
+| -------------------- | ------------------------------- | -------------------------------------------------------------------------------------------- |
+| `REQUEST_DELAY_MS`   | `3500`                          | Min spacing between Chrono24 requests. Raise it if you ever see challenges.                  |
+| `HEADLESS`           | `true`                          | Set `false` to run a visible browser (useful when a challenge needs manual completion once). |
+| `CHROME_CHANNEL`     | `true`                          | Prefer installed Google Chrome; set `false` to force bundled Chromium.                       |
+| `PROFILE_DIR`        | `~/.cache/chrono24-mcp/profile` | Browser profile holding the Cloudflare clearance cookie.                                     |
+| `SEARCH_CACHE_TTL_S` | `180`                           | Search cache TTL.                                                                            |
+| `DETAIL_CACHE_TTL_S` | `1800`                          | Detail cache TTL.                                                                            |
+| `MAX_BATCH`          | `10`                            | Cap for `get_watches`.                                                                       |
+| `CURRENCY_ID`        | `USD`                           | Price normalization currency.                                                                |
+| `DEBUG`              | `false`                         | Verbose fetch logging to stderr.                                                             |
 
 ## Troubleshooting
 

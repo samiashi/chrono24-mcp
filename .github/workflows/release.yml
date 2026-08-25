@@ -23,7 +23,8 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          release-type: node
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
   publish-npm:
     needs: release-please
@@ -38,7 +39,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
       - name: Ensure npm CLI supports OIDC trusted publishing
