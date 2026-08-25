@@ -98,27 +98,30 @@ npm install && npm run build && npm run smoke
 
 ## Tools
 
-| Tool              | Description                                                                                                                                                                                                                                                                                                                  |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `search_listings` | Search with query + filters (brand id, reference, price range, condition, year, seller countries, certified), sort (`relevance`, `price_asc`, `price_desc`, `newest`, `popularity`), paging and an optional `limit` (1-60) for shortlisting. Returns cards with id, url, title, USD price, location, seller type, thumbnail. |
-| `get_watch`       | Full detail for one listing id: reference, condition, year, movement/caliber/power reserve, case material/diameter, scope of delivery, location, description, all photo URLs, canonical URL, seller ids.                                                                                                                     |
-| `get_watches`     | Batch detail for up to 10 ids. Sequential and polite (~4s per uncached id); per-id failures don't break the batch.                                                                                                                                                                                                           |
+| Tool              | Description                                                                                                                                                                                                                                                                                                                            |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_brands`     | List all 550+ Chrono24 watch brands with numeric ids (optional name filter). Feed ids into `search_listings`' `manufacturerIds` or names into `find_models`.                                                                                                                                                                           |
+| `find_models`     | A brand's model catalog: model name, slug and numeric model id (e.g. Rolex -> Submariner `mod1`, Daytona `mod2`). Pair with `search_listings`' `models` + `manufacturerIds` for precise searches.                                                                                                                                      |
+| `search_listings` | Search with query + filters (brand id, model id, reference, price range, condition, year, seller countries, certified), sort (`relevance`, `price_asc`, `price_desc`, `newest`, `popularity`), paging and an optional `limit` (1-60) for shortlisting. Returns cards with id, url, title, USD price, location, seller type, thumbnail. |
+| `get_watch`       | Full detail for one listing id: reference, condition, year, movement/caliber/power reserve, case material/diameter, scope of delivery, location, description, all photo URLs, canonical URL, seller ids.                                                                                                                               |
+| `get_watches`     | Batch detail for up to 10 ids. Sequential and polite (~4s per uncached id); per-id failures don't break the batch.                                                                                                                                                                                                                     |
 
 All prices are normalized to USD (`currencyId=USD`). Empty result sets are valid outcomes, not errors.
 
 ## Environment variables
 
-| Variable             | Default                         | Purpose                                                                                      |
-| -------------------- | ------------------------------- | -------------------------------------------------------------------------------------------- |
-| `REQUEST_DELAY_MS`   | `3500`                          | Min spacing between Chrono24 requests. Raise it if you ever see challenges.                  |
-| `HEADLESS`           | `true`                          | Set `false` to run a visible browser (useful when a challenge needs manual completion once). |
-| `CHROME_CHANNEL`     | `true`                          | Prefer installed Google Chrome; set `false` to force bundled Chromium.                       |
-| `PROFILE_DIR`        | `~/.cache/chrono24-mcp/profile` | Browser profile holding the Cloudflare clearance cookie.                                     |
-| `SEARCH_CACHE_TTL_S` | `180`                           | Search cache TTL.                                                                            |
-| `DETAIL_CACHE_TTL_S` | `1800`                          | Detail cache TTL.                                                                            |
-| `MAX_BATCH`          | `10`                            | Cap for `get_watches`.                                                                       |
-| `CURRENCY_ID`        | `USD`                           | Price normalization currency.                                                                |
-| `DEBUG`              | `false`                         | Verbose fetch logging to stderr.                                                             |
+| Variable               | Default                         | Purpose                                                                                      |
+| ---------------------- | ------------------------------- | -------------------------------------------------------------------------------------------- |
+| `REQUEST_DELAY_MS`     | `3500`                          | Min spacing between Chrono24 requests. Raise it if you ever see challenges.                  |
+| `HEADLESS`             | `true`                          | Set `false` to run a visible browser (useful when a challenge needs manual completion once). |
+| `CHROME_CHANNEL`       | `true`                          | Prefer installed Google Chrome; set `false` to force bundled Chromium.                       |
+| `PROFILE_DIR`          | `~/.cache/chrono24-mcp/profile` | Browser profile holding the Cloudflare clearance cookie.                                     |
+| `SEARCH_CACHE_TTL_S`   | `180`                           | Search cache TTL.                                                                            |
+| `DETAIL_CACHE_TTL_S`   | `1800`                          | Detail cache TTL.                                                                            |
+| `TAXONOMY_CACHE_TTL_S` | `86400`                         | Brand/model taxonomy cache TTL.                                                              |
+| `MAX_BATCH`            | `10`                            | Cap for `get_watches`.                                                                       |
+| `CURRENCY_ID`          | `USD`                           | Price normalization currency.                                                                |
+| `DEBUG`                | `false`                         | Verbose fetch logging to stderr.                                                             |
 
 ## Troubleshooting
 
@@ -128,10 +131,9 @@ All prices are normalized to USD (`currencyId=USD`). Empty result sets are valid
 
 ## Roadmap
 
-- Brand/model taxonomy resolution (`list_brands`, `find_models`)
 - Dealer inventory + ratings (uses the two distinct Chrono24 dealer ids)
 - Optional Streamable HTTP transport for hosted deployments
-- Fixture-based parser tests against recorded HTML snapshots
+- More facet coverage from the search page selects (case material, bracelet, movement, price statistics)
 
 ## Disclaimer
 

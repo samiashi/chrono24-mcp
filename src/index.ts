@@ -12,8 +12,17 @@ import {
   type WatchDetail,
 } from "./parsers/detail.js";
 import {
+  brandSlugFromUrl,
+  filterBrands,
+  parseBrands,
+  parseModels,
+  resolveBrand,
+} from "./parsers/taxonomy.js";
+import {
+  findModelsInput,
   getWatchesInput,
   getWatchInput,
+  listBrandsInput,
   searchInput,
 } from "./tools/schemas.js";
 
@@ -168,6 +177,78 @@ server.tool(
         watches: results,
         note: "Per-id errors appear in the watch entry's error field; other entries remain valid.",
       });
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err), hintFor(err));
+    }
+  }
+);
+
+const BROAD_SEARCH_URL = `${config.baseUrl}/search/index.htm?dosearch=true&sortorder=5&pageSize=60&currencyId=${config.currencyId}`;
+
+async function cachedBrands() {
+  const hit = cache.get<ReturnType<typeof parseBrands>>("taxonomy:brands");
+  if (hit) return hit;
+  const res = await cachedFetch(BROAD_SEARCH_URL, config.taxonomyCacheTtlS);
+  const brands = parseBrands(res.html);
+  cache.set("taxonomy:brands", brands, config.taxonomyCacheTtlS);
+  return brands;
+}
+
+server.tool(
+  "list_brands",
+  "List Chrono24 watch brands with their numeric ids (550+). Use an id with search_listings' manufacturerIds, or a name with find_models.",
+  listBrandsInput,
+  async (args) => {
+    try {
+      const brands = await cachedBrands();
+      const filtered = args.query ? filterBrands(brands, args.query) : brands;
+      return ok({ count: filtered.length, brands: filtered });
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err), hintFor(err));
+    }
+  }
+);
+
+server.tool(
+  "find_models",
+  "List a brand's model catalog (model name, slug and numeric model id). Pair the model id with search_listings' models param and the brand id with manufacturerIds for precise searches.",
+  findModelsInput,
+  async (args) => {
+    try {
+      const brands = await cachedBrands();
+      const brand = resolveBrand(brands, args.brand);
+      if (!brand) {
+        return ok({
+          count: 0,
+          models: [],
+          note: `No brand matching "${args.brand}". Call list_brands to see available names.`,
+        });
+      }
+      const cacheKey = `taxonomy:models:${brand.id}`;
+      const hit = cache.get<{ brand: typeof brand; slug: string; models: ReturnType<typeof parseModels> }>(cacheKey);
+      if (hit) return ok({ ...hit, count: hit.models.length });
+
+      const res = await cachedFetch(
+        `${config.baseUrl}/search/index.htm?dosearch=true&manufacturerIds=${brand.id}&sortorder=5&pageSize=60&currencyId=${config.currencyId}`,
+        config.taxonomyCacheTtlS
+      );
+      let slug = brandSlugFromUrl(res.finalUrl);
+      let html = res.html;
+      if (!slug || !html.includes("--mod")) {
+        const brandPage = await cachedFetch(
+          `${config.baseUrl}/${slug ?? "watches"}/index.htm`,
+          config.taxonomyCacheTtlS
+        );
+        slug = slug ?? brandSlugFromUrl(brandPage.finalUrl);
+        html = brandPage.html.includes("--mod") ? brandPage.html : html;
+      }
+      if (!slug) {
+        return fail(`Could not resolve brand page for "${args.brand}"`);
+      }
+      const models = parseModels(html, slug, brand.name);
+      const payload = { brand: { ...brand, slug }, slug, models };
+      cache.set(cacheKey, payload, config.taxonomyCacheTtlS);
+      return ok({ ...payload, count: models.length });
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err), hintFor(err));
     }

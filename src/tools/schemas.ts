@@ -4,7 +4,8 @@ import { config } from "../config.js";
 export const searchInput = {
   query: z
     .string()
-    .describe("Free-text search, e.g. 'Rolex Submariner' or 'Omega Speedmaster Professional'"),
+    .optional()
+    .describe("Free-text search, e.g. 'Rolex Submariner'. Optional when filtering by manufacturerIds/models/reference instead"),
   manufacturerIds: z
     .string()
     .optional()
@@ -51,6 +52,21 @@ export const getWatchesInput = {
     .describe(`Up to ${config.maxBatch} listing ids; each uncached id costs one polite request`),
 };
 
+export const listBrandsInput = {
+  query: z
+    .string()
+    .optional()
+    .describe("Optional case-insensitive substring filter on brand name, e.g. 'rolex' or 'lange'"),
+};
+
+export const findModelsInput = {
+  brand: z
+    .string()
+    .describe("Brand name (e.g. 'Rolex'), brand id from list_brands (e.g. '221'), or slug"),
+};
+
 export type SearchArgs = z.infer<z.ZodObject<typeof searchInput>>;
 export type GetWatchArgs = z.infer<z.ZodObject<typeof getWatchInput>>;
 export type GetWatchesArgs = z.infer<z.ZodObject<typeof getWatchesInput>>;
+export type ListBrandsArgs = z.infer<z.ZodObject<typeof listBrandsInput>>;
+export type FindModelsArgs = z.infer<z.ZodObject<typeof findModelsInput>>;

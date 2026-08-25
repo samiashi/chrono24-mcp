@@ -1,5 +1,6 @@
 import { load, type CheerioAPI } from "cheerio";
 import { config } from "../config.js";
+import { warnDrift } from "./taxonomy.js";
 
 export interface SearchOptions {
   query?: string;
@@ -106,6 +107,9 @@ export function parseSearchResults(html: string, finalUrl: string, page: number)
   const $ = load(html);
   let nodes = $("div.js-listing-item-container").toArray();
   if (nodes.length === 0) nodes = $("a.js-article-item").toArray();
+  if (nodes.length === 0 && $("body").text().trim().length > 2000) {
+    warnDrift("search", "0 listing cards matched known selectors on a loaded page");
+  }
 
   const listings: ListingCard[] = nodes.map((node) => {
     const $card = $(node);

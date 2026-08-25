@@ -1,4 +1,5 @@
 import { load, type CheerioAPI } from "cheerio";
+import { warnDrift } from "./taxonomy.js";
 
 export interface WatchDetail {
   id?: string;
@@ -103,6 +104,9 @@ export function parseDetail(html: string): Omit<WatchDetail, "id" | "canonicalUr
   const $ = load(html);
   const product = findProductNode(collectJsonLd($));
   const specs = extractSpecTable($);
+  if (!product && Object.keys(specs).length === 0) {
+    warnDrift("detail", "no JSON-LD Product and no spec table rows found");
+  }
   const get = (...keys: string[]): string => {
     for (const k of keys) {
       const found = Object.entries(specs).find(([label]) => label === k || label.includes(k));

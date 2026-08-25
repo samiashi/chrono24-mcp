@@ -11,7 +11,9 @@ An MCP server (`chrono24-mcp`) exposing Chrono24 watch-marketplace tools to LLM 
 ```bash
 npm ci            # install exactly per lockfile
 npm run build     # tsc -> build/
+npm test          # vitest, offline parser tests against test/fixtures/*.html (safe for CI)
 npm run smoke     # LIVE end-to-end test: spawns server, lists tools, searches, fetches detail (needs Google Chrome; hits chrono24.com)
+npm run capture-fixtures  # LIVE: refresh test/fixtures by re-fetching brand/search/detail pages
 node build/index.js   # run the server manually on stdio
 ```
 
@@ -26,13 +28,15 @@ There are no unit tests yet. Do NOT add live-network tests to CI: GitHub runners
 ## Architecture
 
 ```
-src/index.ts           MCP server entry: registers 3 tools, instructions, graceful shutdown
-src/fetcher.ts         Playwright-core fetcher: persistent Chrome profile, challenge sniffing, politeness delay
+src/index.ts           MCP server entry: registers 5 tools, instructions, graceful shutdown
+src/fetcher.ts         Playwright-core fetcher: persistent Chrome profile, challenge sniffing, politeness delay, stale SingletonLock recovery
 src/parsers/search.ts  Search URL builder + listing-card parser (current markup era)
 src/parsers/detail.ts  Detail page parser: schema.org Product JSON-LD + spec table
-src/cache.ts           TTL cache (search 180s, detail 1800s)
+src/parsers/taxonomy.ts  Brand list (manufacturerIds select), model catalog (--mod links), drift warnings
+src/cache.ts           TTL cache (search 180s, detail 1800s, taxonomy 86400s)
 src/config.ts          Env-var config
 src/tools/schemas.ts   Zod input schemas (single source of truth for tool inputs)
+test/parsers.test.ts   Offline vitest suite over recorded fixtures - keep green, extend when parsers change
 ```
 
 ## Hard rules
@@ -50,6 +54,11 @@ src/tools/schemas.ts   Zod input schemas (single source of truth for tool inputs
 - Two distinct dealer ids exist: `dealerId` (`data-dealer-id`, powers ratings) vs `customerId` (URL param, powers inventory search filter). Never conflate.
 - Search URLs redirect to canonical brand/model pages (`/search/index.htm?...` -> `/rolex/submariner--mod1.htm?...`); always parse whatever page lands.
 - Prices are pinned to USD via `currencyId=USD`.
+- Full brand taxonomy lives in the broad search page (`/search/index.htm?dosearch=true` with no query) inside `select[name="manufacturerIds"]` - 554 options with numeric ids. Brand pages only reveal their own id via `man=<slug>&...&manufacturerIds=<id>` query strings.
+- `search?manufacturerIds=<id>` redirects to `/{slug}/index.htm` - that redirect is how a brand id resolves to its slug for model-catalog parsing.
+- Model links are `/{brand-slug}/{model-slug}--mod<id>.htm`; brand pages also list cross-brand popular models (e.g. AP Royal Oak on the Rolex page), so always filter by the brand-slug path prefix. Link text is messy ("Rolex DaytonaAll listings", multiline) - strip "All listings" and the brand prefix.
+- Non-brand slugs (`search`, `offer`, `dealerinfo`, ...) must be excluded wherever brand slugs are parsed (see `NON_BRAND_SLUGS`).
+- Parsers emit `[schema-drift]` stderr warnings when selectors match nothing on a loaded page - if you see these in logs, Chrono24 changed their markup; refresh fixtures via `npm run capture-fixtures` and update selectors.
 
 ## Releases
 

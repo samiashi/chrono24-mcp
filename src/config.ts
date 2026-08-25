@@ -17,6 +17,7 @@ export const config = {
   challengeTimeoutMs: Number(process.env.CHALLENGE_TIMEOUT_MS ?? 45000),
   searchCacheTtlS: Number(process.env.SEARCH_CACHE_TTL_S ?? 180),
   detailCacheTtlS: Number(process.env.DETAIL_CACHE_TTL_S ?? 1800),
+  taxonomyCacheTtlS: Number(process.env.TAXONOMY_CACHE_TTL_S ?? 86400),
   maxBatch: Number(process.env.MAX_BATCH ?? 10),
   debug: boolFrom(process.env.DEBUG, false),
 };
