@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/samiashi/chrono24-mcp/compare/v0.3.0...v0.4.0) (2026-08-25)
+
+
+### Features
+
+* dealer tools, facet filters and price statistics ([c4b526b](https://github.com/samiashi/chrono24-mcp/commit/c4b526b0760e6f5a14dd2bf0c215413beaff7b50))
+
 ## [0.3.0](https://github.com/samiashi/chrono24-mcp/compare/v0.2.0...v0.3.0) (2026-08-25)
 
 
