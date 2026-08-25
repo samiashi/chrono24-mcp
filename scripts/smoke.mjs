@@ -1,7 +1,13 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const transport = new StdioClientTransport({ command: "node", args: ["build/index.js"] });
+const command = process.env.SMOKE_COMMAND ?? "node";
+const args = process.env.SMOKE_ARGS ? JSON.parse(process.env.SMOKE_ARGS) : ["build/index.js"];
+const transport = new StdioClientTransport({
+  command,
+  args,
+  ...(process.env.SMOKE_CWD ? { cwd: process.env.SMOKE_CWD } : {}),
+});
 const client = new Client({ name: "smoke", version: "0.0.1" });
 
 try {
