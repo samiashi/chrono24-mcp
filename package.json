@@ -1,6 +1,6 @@
 {
   "name": "chrono24-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Chrono24 watch-marketplace MCP server - search listings and inspect watch details via a browser-based fetcher that passes Cloudflare",
   "license": "MIT",
   "type": "module",
