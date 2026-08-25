@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/samiashi/chrono24-mcp/compare/v0.2.0...v0.3.0) (2026-08-25)
+
+
+### Features
+
+* brand/model taxonomy tools with offline fixture tests ([00ff7ce](https://github.com/samiashi/chrono24-mcp/commit/00ff7ce22bfc6ae3827290d64f2c02a905c72a3a))
+
+
+### Bug Fixes
+
+* recover from stale Chrome singleton lock after a hard kill ([f6ff9b1](https://github.com/samiashi/chrono24-mcp/commit/f6ff9b15b7138ccacb7e95ee8272926920aaa1eb))
+
 ## [0.2.0](https://github.com/samiashi/chrono24-mcp/compare/v0.1.0...v0.2.0) (2026-08-25)
 
 
