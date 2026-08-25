@@ -31,6 +31,11 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "vitest run",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.mjs",
     "capture-fixtures": "tsx scripts/capture-fixtures.ts",
     "prepublishOnly": "npm run build"
@@ -42,9 +47,15 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.10.0",
+    "eslint": "^10.9.1",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.11.0",
+    "prettier": "^3.9.6",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.68.0",
     "vitest": "^3.0.0"
   }
 }

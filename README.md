@@ -132,7 +132,6 @@ All prices are normalized to USD (`currencyId=USD`). Empty result sets are valid
 ## Roadmap
 
 - Dealer inventory + ratings (uses the two distinct Chrono24 dealer ids)
-- Optional Streamable HTTP transport for hosted deployments
 - More facet coverage from the search page selects (case material, bracelet, movement, price statistics)
 
 ## Disclaimer

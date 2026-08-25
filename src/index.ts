@@ -5,12 +5,7 @@ import { TtlCache } from "./cache.js";
 import { config } from "./config.js";
 import { Fetcher } from "./fetcher.js";
 import { buildSearchUrl, parseSearchResults, resolveSort } from "./parsers/search.js";
-import {
-  extractCustomerId,
-  extractDealerId,
-  parseDetail,
-  type WatchDetail,
-} from "./parsers/detail.js";
+import { extractCustomerId, extractDealerId, parseDetail, type WatchDetail } from "./parsers/detail.js";
 import {
   brandSlugFromUrl,
   filterBrands,
@@ -108,7 +103,7 @@ server.tool(
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err), hintFor(err));
     }
-  }
+  },
 );
 
 server.tool(
@@ -133,7 +128,7 @@ server.tool(
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err), hintFor(err));
     }
-  }
+  },
 );
 
 server.tool(
@@ -180,7 +175,7 @@ server.tool(
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err), hintFor(err));
     }
-  }
+  },
 );
 
 const BROAD_SEARCH_URL = `${config.baseUrl}/search/index.htm?dosearch=true&sortorder=5&pageSize=60&currencyId=${config.currencyId}`;
@@ -206,7 +201,7 @@ server.tool(
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err), hintFor(err));
     }
-  }
+  },
 );
 
 server.tool(
@@ -225,19 +220,21 @@ server.tool(
         });
       }
       const cacheKey = `taxonomy:models:${brand.id}`;
-      const hit = cache.get<{ brand: typeof brand; slug: string; models: ReturnType<typeof parseModels> }>(cacheKey);
+      const hit = cache.get<{ brand: typeof brand; slug: string; models: ReturnType<typeof parseModels> }>(
+        cacheKey,
+      );
       if (hit) return ok({ ...hit, count: hit.models.length });
 
       const res = await cachedFetch(
         `${config.baseUrl}/search/index.htm?dosearch=true&manufacturerIds=${brand.id}&sortorder=5&pageSize=60&currencyId=${config.currencyId}`,
-        config.taxonomyCacheTtlS
+        config.taxonomyCacheTtlS,
       );
       let slug = brandSlugFromUrl(res.finalUrl);
       let html = res.html;
       if (!slug || !html.includes("--mod")) {
         const brandPage = await cachedFetch(
           `${config.baseUrl}/${slug ?? "watches"}/index.htm`,
-          config.taxonomyCacheTtlS
+          config.taxonomyCacheTtlS,
         );
         slug = slug ?? brandSlugFromUrl(brandPage.finalUrl);
         html = brandPage.html.includes("--mod") ? brandPage.html : html;
@@ -252,7 +249,7 @@ server.tool(
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err), hintFor(err));
     }
-  }
+  },
 );
 
 let closing = false;

@@ -68,8 +68,9 @@ function extractSpecTable($: CheerioAPI): Record<string, string> {
     const label = $th.text().trim();
     const value = $th.next("td").text().trim();
     if (label && value) {
-      specs[label.toLowerCase().replace(/[:.]$/, "").replace(/\s+/g, " ")] =
-        value.replace(/\s+/g, " ").trim();
+      specs[label.toLowerCase().replace(/[:.]$/, "").replace(/\s+/g, " ")] = value
+        .replace(/\s+/g, " ")
+        .trim();
     }
   });
   return specs;
@@ -130,8 +131,7 @@ export function parseDetail(html: string): Omit<WatchDetail, "id" | "canonicalUr
   const priceValue = offerPrice ? Number(offerPrice.replace(/[^\d.]/g, "")) || null : null;
 
   const brandNode = product?.["brand"];
-  const brand =
-    typeof brandNode === "string" ? brandNode : (brandNode as JsonNode | undefined)?.["name"];
+  const brand = typeof brandNode === "string" ? brandNode : (brandNode as JsonNode | undefined)?.["name"];
 
   return {
     brand: typeof brand === "string" ? brand : "",

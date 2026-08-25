@@ -116,7 +116,10 @@ export function parseSearchResults(html: string, finalUrl: string, page: number)
     const linkEl = $card.find("a.js-listing-item-link").first();
     const href = linkEl.attr("href") ?? $card.attr("href") ?? "";
     const idMatch = href.match(/--id(\d+)\.htm/);
-    const p = $card.find("p.text-ellipsis").toArray().map((el) => $(el).text().trim());
+    const p = $card
+      .find("p.text-ellipsis")
+      .toArray()
+      .map((el) => $(el).text().trim());
     const priceRaw =
       $card.find("p.wt-listing-item-price").first().text().trim() ||
       $card.find(".price").first().text().trim();
@@ -124,21 +127,12 @@ export function parseSearchResults(html: string, finalUrl: string, page: number)
     const locBtn = $card.find("button.wt-listing-item-location").first();
     const location = locBtn.attr("data-title") || locBtn.text().trim() || null;
     const badge =
-      $card
-        .find(".wt-listing-item-image-badge, .wt-listing-item-augly-badge")
-        .first()
-        .text()
-        .trim() || null;
+      $card.find(".wt-listing-item-image-badge, .wt-listing-item-augly-badge").first().text().trim() || null;
     const cardText = $card.text();
-    const sellerType = /private seller/i.test(cardText)
-      ? ("private" as const)
-      : ("dealer" as const);
+    const sellerType = /private seller/i.test(cardText) ? ("private" as const) : ("dealer" as const);
     const img = $card.find("img[data-lazy-sweet-spot-master-src], img.sweetspot").first();
     const imageUrl =
-      (img.attr("data-lazy-sweet-spot-master-src") ?? img.attr("src") ?? "").replace(
-        "_SIZE_",
-        "280"
-      ) || null;
+      (img.attr("data-lazy-sweet-spot-master-src") ?? img.attr("src") ?? "").replace("_SIZE_", "280") || null;
     return {
       id: idMatch?.[1] ?? null,
       url: absoluteUrl(href),

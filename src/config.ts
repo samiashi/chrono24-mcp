@@ -1,8 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
-const boolFrom = (v: string | undefined, def: boolean) =>
-  v === undefined ? def : v === "1" || v === "true";
+const boolFrom = (v: string | undefined, def: boolean) => (v === undefined ? def : v === "1" || v === "true");
 
 const defaultProfileDir = path.join(os.homedir(), ".cache", "chrono24-mcp", "profile");
 

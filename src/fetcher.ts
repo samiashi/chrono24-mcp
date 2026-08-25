@@ -65,7 +65,7 @@ export class Fetcher {
         console.error("[fetcher] launched Google Chrome");
       } catch (err) {
         console.error(
-          `[fetcher] Google Chrome unavailable (${err instanceof Error ? err.message : err}), falling back to bundled Chromium`
+          `[fetcher] Google Chrome unavailable (${err instanceof Error ? err.message : err}), falling back to bundled Chromium`,
         );
       }
     }
@@ -74,7 +74,8 @@ export class Fetcher {
         this.context = await this.launch(base);
       } catch (err) {
         throw new Error(
-          `No browser available. Install Google Chrome, or run "npx playwright install chromium" for the bundled fallback (${err instanceof Error ? err.message : err})`
+          `No browser available. Install Google Chrome, or run "npx playwright install chromium" for the bundled fallback (${err instanceof Error ? err.message : err})`,
+          { cause: err },
         );
       }
     }
@@ -99,8 +100,8 @@ export class Fetcher {
         bodyBytes: bodyText.length,
         hasChallengeSelector: Boolean(
           document.querySelector(
-            "#challenge-form, #challenge-container, #cf-challenge-container, iframe[src*='challenges.cloudflare.com']"
-          )
+            "#challenge-form, #challenge-container, #cf-challenge-container, iframe[src*='challenges.cloudflare.com']",
+          ),
         ),
       };
     });
@@ -110,7 +111,7 @@ export class Fetcher {
     return (
       s.hasChallengeSelector ||
       /just a moment|checking your browser|attention required|verifying you are human|please wait/.test(
-        s.title
+        s.title,
       ) ||
       s.bodyBytes < 2000
     );
@@ -125,24 +126,24 @@ export class Fetcher {
     }
     const last = await this.inspect(page);
     throw new Error(
-      `Cloudflare challenge did not clear within ${Math.round(config.challengeTimeoutMs / 1000)}s (title="${last.title}", bytes=${last.bodyBytes})`
+      `Cloudflare challenge did not clear within ${Math.round(config.challengeTimeoutMs / 1000)}s (title="${last.title}", bytes=${last.bodyBytes})`,
     );
   }
 
   private async navigate(url: string): Promise<FetchResult> {
     await this.waitForSlot();
     const page = this.page!;
-    let status = 0;
+    let response: Awaited<ReturnType<Page["goto"]>>;
     try {
-      const response = await page.goto(url, {
+      response = await page.goto(url, {
         waitUntil: "domcontentloaded",
         timeout: config.navigationTimeoutMs,
       });
-      status = response?.status() ?? 0;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Navigation failed for ${url}: ${msg}`);
+      throw new Error(`Navigation failed for ${url}: ${msg}`, { cause: err });
     }
+    const status = response?.status() ?? 0;
     await this.settle(page);
     const html = await page.content();
     if (config.debug) {

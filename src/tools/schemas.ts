@@ -5,7 +5,9 @@ export const searchInput = {
   query: z
     .string()
     .optional()
-    .describe("Free-text search, e.g. 'Rolex Submariner'. Optional when filtering by manufacturerIds/models/reference instead"),
+    .describe(
+      "Free-text search, e.g. 'Rolex Submariner'. Optional when filtering by manufacturerIds/models/reference instead",
+    ),
   manufacturerIds: z
     .string()
     .optional()
@@ -33,15 +35,14 @@ export const searchInput = {
     .min(1)
     .max(60)
     .optional()
-    .describe("Cap the number of listings returned (1-60); useful for shortlisting without parsing a full page"),
+    .describe(
+      "Cap the number of listings returned (1-60); useful for shortlisting without parsing a full page",
+    ),
   certified: z.boolean().optional().describe("Only Chrono24 Certified listings"),
 };
 
 export const getWatchInput = {
-  id: z
-    .string()
-    .regex(/^\d+$/)
-    .describe("Chrono24 listing id (digits from a listing URL --id<id>.htm)"),
+  id: z.string().regex(/^\d+$/).describe("Chrono24 listing id (digits from a listing URL --id<id>.htm)"),
 };
 
 export const getWatchesInput = {
@@ -60,9 +61,7 @@ export const listBrandsInput = {
 };
 
 export const findModelsInput = {
-  brand: z
-    .string()
-    .describe("Brand name (e.g. 'Rolex'), brand id from list_brands (e.g. '221'), or slug"),
+  brand: z.string().describe("Brand name (e.g. 'Rolex'), brand id from list_brands (e.g. '221'), or slug"),
 };
 
 export type SearchArgs = z.infer<z.ZodObject<typeof searchInput>>;

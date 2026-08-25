@@ -36,7 +36,14 @@ try {
 
   console.log("=== man=<slug>...manufacturerIds=<id> pairs ===");
   const pairs = [...brand.html.matchAll(/man=([a-z0-9-]+)[^"']*?manufacturerIds=(\d+)/g)];
-  console.log("count:", pairs.length, pairs.slice(0, 15).map((m) => `${m[1]}=${m[2]}`).join(", "));
+  console.log(
+    "count:",
+    pairs.length,
+    pairs
+      .slice(0, 15)
+      .map((m) => `${m[1]}=${m[2]}`)
+      .join(", "),
+  );
 
   console.log("=== --mod model links on brand page ===");
   const modLinks = new Map();
@@ -57,7 +64,9 @@ try {
     const opts = $(sel).find("option");
     if (opts.length > 5) {
       console.log(`  select "${name}": ${opts.length} options, sample:`);
-      opts.slice(0, 6).each((_, o) => console.log(`    value=${$(o).attr("value")} "${$(o).text().trim().slice(0, 40)}"`));
+      opts
+        .slice(0, 6)
+        .each((_, o) => console.log(`    value=${$(o).attr("value")} "${$(o).text().trim().slice(0, 40)}"`));
     }
   });
 

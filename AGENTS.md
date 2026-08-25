@@ -9,13 +9,18 @@ An MCP server (`chrono24-mcp`) exposing Chrono24 watch-marketplace tools to LLM 
 ## Commands
 
 ```bash
-npm ci            # install exactly per lockfile
-npm run build     # tsc -> build/
-npm test          # vitest, offline parser tests against test/fixtures/*.html (safe for CI)
-npm run smoke     # LIVE end-to-end test: spawns server, lists tools, searches, fetches detail (needs Google Chrome; hits chrono24.com)
+npm ci              # install exactly per lockfile
+npm run build       # tsc -> build/
+npm run typecheck   # tsc --noEmit
+npm run lint        # eslint (flat config in eslint.config.js)
+npm run format      # prettier --write .
+npm test            # vitest, offline parser tests against test/fixtures/*.html (safe for CI)
+npm run smoke       # LIVE end-to-end test: spawns server, lists tools, searches, fetches detail (needs Google Chrome; hits chrono24.com)
 npm run capture-fixtures  # LIVE: refresh test/fixtures by re-fetching brand/search/detail pages
 node build/index.js   # run the server manually on stdio
 ```
+
+Before committing run `npm run format && npm run lint && npm run typecheck && npm test` - CI (`.github/workflows/ci.yml`) runs exactly those plus build. Prettier config: 110 print width, double quotes, trailing commas. ESLint: typescript-eslint recommended + prettier compat; empty catch blocks are allowed.
 
 Smoke overrides for testing a published package instead of the local build:
 

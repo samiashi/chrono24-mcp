@@ -43,7 +43,11 @@ describe("search parser", () => {
 
 describe("search url builder", () => {
   it("builds a canonical search url", () => {
-    const url = buildSearchUrl({ query: "Rolex Submariner", priceTo: 15000, sortorder: resolveSort("price_asc") });
+    const url = buildSearchUrl({
+      query: "Rolex Submariner",
+      priceTo: 15000,
+      sortorder: resolveSort("price_asc"),
+    });
     expect(url).toContain("dosearch=true");
     expect(url).toContain("query=Rolex+Submariner");
     expect(url).toContain("priceTo=15000");
@@ -126,7 +130,9 @@ describe("taxonomy parsers", () => {
 
   it("extracts brand slugs from urls", () => {
     expect(brandSlugFromUrl("https://www.chrono24.com/rolex/index.htm?x=1")).toBe("rolex");
-    expect(brandSlugFromUrl("https://www.chrono24.com/rolex/submariner--mod1.htm?dosearch=true")).toBe("rolex");
+    expect(brandSlugFromUrl("https://www.chrono24.com/rolex/submariner--mod1.htm?dosearch=true")).toBe(
+      "rolex",
+    );
     expect(brandSlugFromUrl("https://www.chrono24.com/search/index.htm")).toBeNull();
   });
 });
