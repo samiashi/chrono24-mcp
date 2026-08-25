@@ -137,25 +137,6 @@ All prices are normalized to USD (`currencyId=USD`). Empty result sets are valid
 - Optional Streamable HTTP transport for hosted deployments
 - Fixture-based parser tests against recorded HTML snapshots
 
-## Releasing
-
-Fully automated via [release-please](https://github.com/googleapis/release-please) + npm [Trusted Publishing](https://docs.npmjs.com/trusted-publishers) - no tokens, no manual steps after setup.
-
-1. Merge PRs whose titles follow [Conventional Commits](https://www.conventionalcommits.org):
-   - `feat:` -> minor bump
-   - `fix:` -> patch bump
-   - `feat!:` / `fix!:` -> major bump
-   - anything else (`chore:`, `docs:`, `ci:`...) -> no release by itself
-2. A bot keeps a **Release PR** open ("chore(main): release X.Y.Z") that accumulates merged work, bumps the version and updates `CHANGELOG.md`.
-3. Merging that Release PR publishes to npm **with provenance** (Sigstore-signed, OIDC-verified) and creates a GitHub Release listing every merged PR.
-
-One-time setup:
-
-- Repo Settings > Actions > General: enable **Allow GitHub Actions to create and approve pull requests**.
-- npmjs.com > package `chrono24-mcp` > Settings > Trusted Publisher: link GitHub repo `samiashi/chrono24-mcp`, workflow file name `release.yml`, leave environment blank.
-
-CI runs typecheck/build on every PR; no live Chrono24 calls happen in CI (Cloudflare blocks datacenter IPs by design).
-
 ## Disclaimer
 
 Educational/research project. Not affiliated with, endorsed by, or associated with Chrono24 GmbH. Scraping may violate Chrono24's Terms of Service depending on jurisdiction and use; you are responsible for compliance. Rate limits are deliberately conservative - keep them that way.
