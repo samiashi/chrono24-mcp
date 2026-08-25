@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { TtlCache } from "./cache.js";
@@ -10,18 +11,27 @@ import {
   brandSlugFromUrl,
   filterBrands,
   parseBrands,
+  parseFacets,
   parseModels,
   resolveBrand,
+  type Facet,
 } from "./parsers/taxonomy.js";
+import { parseRatings } from "./parsers/ratings.js";
+import { computeStats } from "./parsers/stats.js";
 import {
   findModelsInput,
+  getDealerListingsInput,
+  getDealerRatingsInput,
   getWatchesInput,
   getWatchInput,
+  getPriceStatsInput,
   listBrandsInput,
+  listFiltersInput,
   searchInput,
 } from "./tools/schemas.js";
 
-const VERSION = "0.1.0";
+const require = createRequire(import.meta.url);
+const VERSION: string = require("../package.json").version;
 
 const INSTRUCTIONS = [
   "Tools for the Chrono24 watch marketplace (search + listing details).",
@@ -92,6 +102,7 @@ server.tool(
         usedOrNew: args.condition,
         year: args.year,
         countryIds: args.countries,
+        facets: args.facets,
         sortorder: resolveSort(args.sort),
         page: args.page,
         certified: args.certified,
@@ -246,6 +257,129 @@ server.tool(
       const payload = { brand: { ...brand, slug }, slug, models };
       cache.set(cacheKey, payload, config.taxonomyCacheTtlS);
       return ok({ ...payload, count: models.length });
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err), hintFor(err));
+    }
+  },
+);
+
+server.tool(
+  "list_filters",
+  "List Chrono24 search facet filters with their allowed values (case material, bracelet material, gender, watch category, country, listing age, ...). Use values with search_listings' facets param.",
+  listFiltersInput,
+  async (args) => {
+    try {
+      let facets = cache.get<Facet[]>("taxonomy:facets");
+      if (!facets) {
+        const res = await cachedFetch(BROAD_SEARCH_URL, config.taxonomyCacheTtlS);
+        facets = parseFacets(res.html);
+        cache.set("taxonomy:facets", facets, config.taxonomyCacheTtlS);
+      }
+      if (args.name) {
+        const match = facets.find((f) => f.name === args.name);
+        if (!match) {
+          return ok({
+            count: 0,
+            note: `No facet named "${args.name}". Available: ${facets.map((f) => f.name).join(", ")}`,
+          });
+        }
+        return ok({ count: match.options.length, name: match.name, options: match.options });
+      }
+      return ok({ count: facets.length, facets });
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err), hintFor(err));
+    }
+  },
+);
+
+server.tool(
+  "get_price_stats",
+  "Price statistics for a watch across Chrono24: min, percentiles (p10/p25/median/p75/p90), max and sample size, computed from the 60 cheapest matching listings sorted ascending. One polite request.",
+  getPriceStatsInput,
+  async (args) => {
+    try {
+      const url = buildSearchUrl({
+        query: args.query,
+        manufacturerIds: args.manufacturerIds,
+        models: args.models,
+        referenceNumber: args.referenceNumber,
+        priceFrom: args.priceFrom,
+        priceTo: args.priceTo,
+        usedOrNew: args.condition,
+        year: args.year,
+        countryIds: args.countries,
+        facets: args.facets,
+        sortorder: resolveSort("price_asc"),
+        pageSize: 60,
+      });
+      const statsKey = `stats:${url}`;
+      const hit = cache.get<Record<string, unknown>>(statsKey);
+      if (hit) return ok(hit);
+      const res = await cachedFetch(url, config.searchCacheTtlS);
+      const parsed = parseSearchResults(res.html, res.finalUrl, 1);
+      const prices = parsed.listings.map((l) => l.priceValue).filter((p): p is number => p !== null);
+      const stats = computeStats(prices);
+      const payload = {
+        scope: {
+          query: args.query ?? null,
+          manufacturerIds: args.manufacturerIds ?? null,
+          models: args.models ?? null,
+        },
+        totalCount: parsed.totalCount,
+        sourceUrl: parsed.sourceUrl,
+        currency: "USD",
+        stats,
+        cheapest: parsed.listings.filter((l) => l.priceValue !== null).slice(0, 3),
+        note: stats
+          ? `Stats computed from the ${stats.sampleSize} cheapest listings on page 1 (sorted price ascending).`
+          : "No priced listings found for this scope.",
+      };
+      cache.set(statsKey, payload, config.searchCacheTtlS);
+      return ok(payload);
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err), hintFor(err));
+    }
+  },
+);
+
+server.tool(
+  "get_dealer_listings",
+  "List a dealer's current inventory by their customerId (from get_watch's sellerIds). Same card shape as search_listings.",
+  getDealerListingsInput,
+  async (args) => {
+    try {
+      const url = buildSearchUrl({
+        customerId: args.customerId,
+        sortorder: resolveSort(args.sort),
+        page: args.page,
+        pageSize: 60,
+      });
+      const res = await cachedFetch(url, config.searchCacheTtlS);
+      const parsed = parseSearchResults(res.html, res.finalUrl, args.page ?? 1);
+      return ok({ customerId: args.customerId, ...parsed });
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err), hintFor(err));
+    }
+  },
+);
+
+server.tool(
+  "get_dealer_ratings",
+  "Fetch a dealer's customer reviews by their dealerId (from get_watch's sellerIds - NOT the customerId). Includes per-review rating, text, dealer reply and paging totals.",
+  getDealerRatingsInput,
+  async (args) => {
+    try {
+      const url = `${config.baseUrl}/api/merchant/ratings.json?dealerId=${args.dealerId}&size=${args.size}&offset=${args.offset}&stars=0&sorting=Relevance`;
+      const cacheKey = `ratings:${args.dealerId}:${args.size}:${args.offset}`;
+      const hit = cache.get<ReturnType<typeof parseRatings>>(cacheKey);
+      if (hit) return ok({ dealerId: args.dealerId, ...hit });
+      const res = await fetcher.fetchJson(url);
+      if (res.status !== 200) {
+        return fail(`Ratings request failed with status ${res.status}`, hintFor(new Error("upstream")));
+      }
+      const parsed = parseRatings(res.body);
+      cache.set(cacheKey, parsed, config.searchCacheTtlS);
+      return ok({ dealerId: args.dealerId, ...parsed });
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err), hintFor(err));
     }

@@ -33,11 +33,13 @@ There are no unit tests yet. Do NOT add live-network tests to CI: GitHub runners
 ## Architecture
 
 ```
-src/index.ts           MCP server entry: registers 5 tools, instructions, graceful shutdown
-src/fetcher.ts         Playwright-core fetcher: persistent Chrome profile, challenge sniffing, politeness delay, stale SingletonLock recovery
-src/parsers/search.ts  Search URL builder + listing-card parser (current markup era)
+src/index.ts           MCP server entry: registers 9 tools, instructions, graceful shutdown
+src/fetcher.ts         Playwright-core fetcher: persistent Chrome profile, challenge sniffing, politeness delay, stale SingletonLock recovery, in-page fetchJson for same-origin JSON APIs
+src/parsers/search.ts  Search URL builder + listing-card parser (current markup era), facet param allowlist
 src/parsers/detail.ts  Detail page parser: schema.org Product JSON-LD + spec table
-src/parsers/taxonomy.ts  Brand list (manufacturerIds select), model catalog (--mod links), drift warnings
+src/parsers/taxonomy.ts  Brand list (manufacturerIds select), model catalog (--mod links), facet selects, drift warnings
+src/parsers/ratings.ts Dealer ratings JSON normalizer
+src/parsers/stats.ts   Price percentile stats
 src/cache.ts           TTL cache (search 180s, detail 1800s, taxonomy 86400s)
 src/config.ts          Env-var config
 src/tools/schemas.ts   Zod input schemas (single source of truth for tool inputs)
@@ -56,7 +58,8 @@ test/parsers.test.ts   Offline vitest suite over recorded fixtures - keep green,
 - Search cards: `div.js-listing-item-container`; title lines `p.text-ellipsis`; price `p.wt-listing-item-price`; image attr is `img[data-lazy-sweet-spot-master-src]` with `_SIZE_` replaced by pixel width. Legacy fallback selector: `a.js-article-item` (old markup era).
 - Total result count: parse leaf text nodes matching `N listings/results`. NEVER read JSON-LD `AggregateOffer.offerCount` (counts only the ~60 embedded offers).
 - Detail pages: primary source is `<script type="application/ld+json">` Product node (`sku` = reference number, `offers` = price); supplement with the spec table. Neutral URL form `/watches/--id<ID>.htm` redirects to canonical.
-- Two distinct dealer ids exist: `dealerId` (`data-dealer-id`, powers ratings) vs `customerId` (URL param, powers inventory search filter). Never conflate.
+- Two distinct dealer ids exist: `dealerId` (`data-dealer-id`, powers ratings via `/api/merchant/ratings.json?dealerId=...`) vs `customerId` (URL param, powers inventory search filter). Never conflate - they are different numbers for the same dealer.
+- Dealer ratings JSON is fetched in-page (`page.evaluate(fetch)` with credentials) so it inherits the Cloudflare-cleared cookies; shape: `{dealerRatingModels[], paging{total,offset}, ratingStarsFilter[]}`.
 - Search URLs redirect to canonical brand/model pages (`/search/index.htm?...` -> `/rolex/submariner--mod1.htm?...`); always parse whatever page lands.
 - Prices are pinned to USD via `currencyId=USD`.
 - Full brand taxonomy lives in the broad search page (`/search/index.htm?dosearch=true` with no query) inside `select[name="manufacturerIds"]` - 554 options with numeric ids. Brand pages only reveal their own id via `man=<slug>&...&manufacturerIds=<id>` query strings.

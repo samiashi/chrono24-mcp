@@ -1,5 +1,9 @@
 # chrono24-mcp
 
+[![npm](https://img.shields.io/npm/v/chrono24-mcp)](https://www.npmjs.com/package/chrono24-mcp)
+[![CI](https://github.com/samiashi/chrono24-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/samiashi/chrono24-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/samiashi/chrono24-mcp/blob/main/LICENSE)
+
 [Chrono24](https://www.chrono24.com/) watch-marketplace tools for any MCP-capable LLM client - Claude Code, Claude Desktop, Codex, Cursor, Windsurf and friends.
 
 Search listings, shortlist by price/location/seller type, then pull full watch details (reference, movement, caliber, box & papers, dealer info, photos) without leaving your chat.
@@ -102,9 +106,13 @@ npm install && npm run build && npm run smoke
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `list_brands`     | List all 550+ Chrono24 watch brands with numeric ids (optional name filter). Feed ids into `search_listings`' `manufacturerIds` or names into `find_models`.                                                                                                                                                                           |
 | `find_models`     | A brand's model catalog: model name, slug and numeric model id (e.g. Rolex -> Submariner `mod1`, Daytona `mod2`). Pair with `search_listings`' `models` + `manufacturerIds` for precise searches.                                                                                                                                      |
-| `search_listings` | Search with query + filters (brand id, model id, reference, price range, condition, year, seller countries, certified), sort (`relevance`, `price_asc`, `price_desc`, `newest`, `popularity`), paging and an optional `limit` (1-60) for shortlisting. Returns cards with id, url, title, USD price, location, seller type, thumbnail. |
+| `list_filters`    | All search facet filters with allowed values (case material, bracelet material, gender, watch category, country, listing age). Use with `search_listings`' `facets` param.                                                                                                                                                             |
+| `search_listings` | Search with query + filters (brand id, model id, reference, price range, condition, year, seller countries, facets), sort (`relevance`, `price_asc`, `price_desc`, `newest`, `popularity`), paging and an optional `limit` (1-60) for shortlisting. Returns cards with id, url, title, USD price, location, seller type, thumbnail. |
+| `get_price_stats` | Price statistics for a watch: min, p10/p25/median/p75/p90, max and sample size from the 60 cheapest matching listings. One request - the fast way to answer "what's a fair price for X?".                                                                                                                                             |
 | `get_watch`       | Full detail for one listing id: reference, condition, year, movement/caliber/power reserve, case material/diameter, scope of delivery, location, description, all photo URLs, canonical URL, seller ids.                                                                                                                               |
 | `get_watches`     | Batch detail for up to 10 ids. Sequential and polite (~4s per uncached id); per-id failures don't break the batch.                                                                                                                                                                                                                     |
+| `get_dealer_listings` | A dealer's current inventory by `customerId` (from `get_watch`'s `sellerIds`). Same card shape as `search_listings`.                                                                                                                                                                                                              |
+| `get_dealer_ratings` | A dealer's customer reviews by `dealerId` (from `get_watch`'s `sellerIds` - a different id!). Per-review rating, text, dealer reply, paging totals.                                                                                                                                                                                |
 
 All prices are normalized to USD (`currencyId=USD`). Empty result sets are valid outcomes, not errors.
 
@@ -131,8 +139,7 @@ All prices are normalized to USD (`currencyId=USD`). Empty result sets are valid
 
 ## Roadmap
 
-- Dealer inventory + ratings (uses the two distinct Chrono24 dealer ids)
-- More facet coverage from the search page selects (case material, bracelet, movement, price statistics)
+Ideas welcome - open an issue.
 
 ## Disclaimer
 

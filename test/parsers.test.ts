@@ -1,14 +1,22 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildSearchUrl, parseSearchResults, resolveSort } from "../src/parsers/search.js";
+import {
+  buildSearchUrl,
+  parseSearchResults,
+  resolveSort,
+  FACET_PARAM_ALLOWLIST,
+} from "../src/parsers/search.js";
 import { parseDetail } from "../src/parsers/detail.js";
 import {
   brandSlugFromUrl,
   filterBrands,
   parseBrands,
+  parseFacets,
   parseModels,
   resolveBrand,
 } from "../src/parsers/taxonomy.js";
+import { parseRatings } from "../src/parsers/ratings.js";
+import { computeStats } from "../src/parsers/stats.js";
 
 const fixture = (name: string) => readFileSync(`test/fixtures/${name}`, "utf8");
 
@@ -134,5 +142,90 @@ describe("taxonomy parsers", () => {
       "rolex",
     );
     expect(brandSlugFromUrl("https://www.chrono24.com/search/index.htm")).toBeNull();
+    expect(brandSlugFromUrl("https://www.chrono24.com/offer/index.htm")).toBeNull();
+  });
+});
+
+describe("facet parser", () => {
+  const facets = parseFacets(fixture("search-broad.html"));
+
+  it("parses facet selects with options, skipping non-facets", () => {
+    const names = facets.map((f) => f.name);
+    expect(names).toContain("caseMaterials");
+    expect(names).toContain("braceletMaterial");
+    expect(names).toContain("gender");
+    expect(names).toContain("countryIds");
+    expect(names).not.toContain("manufacturerIds");
+    expect(names).not.toContain("sortorder");
+    expect(names).not.toContain("appearance");
+  });
+
+  it("caseMaterials contains steel with a numeric value", () => {
+    const caseMaterials = facets.find((f) => f.name === "caseMaterials");
+    expect(caseMaterials).toBeDefined();
+    const steel = caseMaterials?.options.find((o) => o.label === "Steel");
+    expect(steel?.value).toMatch(/^\d+$/);
+  });
+});
+
+describe("price stats", () => {
+  const search = parseSearchResults(fixture("search-rolex-submariner.html"), "https://x/final", 1);
+  const prices = search.listings.map((l) => l.priceValue).filter((p): p is number => p !== null);
+
+  it("computes bounded percentiles from search prices", () => {
+    const stats = computeStats(prices);
+    expect(stats).not.toBeNull();
+    expect(stats!.sampleSize).toBe(prices.length);
+    expect(stats!.min).toBeLessThanOrEqual(stats!.p10);
+    expect(stats!.p10).toBeLessThanOrEqual(stats!.p25);
+    expect(stats!.p25).toBeLessThanOrEqual(stats!.median);
+    expect(stats!.median).toBeLessThanOrEqual(stats!.p75);
+    expect(stats!.p75).toBeLessThanOrEqual(stats!.p90);
+    expect(stats!.p90).toBeLessThanOrEqual(stats!.max);
+    expect(stats!.min).toBeGreaterThan(0);
+  });
+
+  it("returns null for empty input", () => {
+    expect(computeStats([])).toBeNull();
+  });
+});
+
+describe("dealer ratings parser", () => {
+  const result = parseRatings(fixture("dealer-ratings.json"));
+
+  it("parses totals and entries", () => {
+    expect(result.total).toBeGreaterThan(0);
+    expect(result.count).toBe(5);
+    expect(result.offset).toBe(0);
+  });
+
+  it("normalizes rating entries", () => {
+    const first = result.ratings[0];
+    expect(first.author.length).toBeGreaterThan(0);
+    expect(first.rating).toBeGreaterThan(0);
+    expect(first.rating).toBeLessThanOrEqual(5);
+    expect(typeof first.recommendsSeller).toBe("boolean");
+    expect(first.review.length).toBeGreaterThan(0);
+    expect(first.watchTitle.length).toBeGreaterThan(0);
+  });
+});
+
+describe("search facets passthrough", () => {
+  it("builds url with allowlisted facet params", () => {
+    const url = buildSearchUrl({ query: "rolex", facets: { caseMaterials: "4", braceletMaterial: "407" } });
+    expect(url).toContain("caseMaterials=4");
+    expect(url).toContain("braceletMaterial=407");
+  });
+
+  it("drops non-allowlisted facet params", () => {
+    const url = buildSearchUrl({ query: "rolex", facets: { evilParam: "x", caseMaterials: "4" } });
+    expect(url).not.toContain("evilParam");
+    expect(url).toContain("caseMaterials=4");
+  });
+
+  it("allowlist covers the documented facet names", () => {
+    for (const name of ["caseMaterials", "braceletMaterial", "gender", "watchCategories", "maxAgeInDays"]) {
+      expect(FACET_PARAM_ALLOWLIST.has(name)).toBe(true);
+    }
   });
 });

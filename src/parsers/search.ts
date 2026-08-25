@@ -16,7 +16,31 @@ export interface SearchOptions {
   page?: number;
   pageSize?: number;
   certified?: boolean;
+  customerId?: string;
+  facets?: Record<string, string>;
 }
+
+export const FACET_PARAM_ALLOWLIST = new Set([
+  "caseMaterials",
+  "braceletMaterial",
+  "claspMaterial",
+  "clasp",
+  "dialColors",
+  "dialNumbers",
+  "movementTypes",
+  "functions",
+  "otherAttributes",
+  "condition",
+  "specials",
+  "styles",
+  "gender",
+  "watchCategories",
+  "maxAgeInDays",
+  "stockInfo",
+  "bezelMaterial",
+  "crystal",
+  "waterproof",
+]);
 
 export interface ListingCard {
   id: string | null;
@@ -70,7 +94,11 @@ export function buildSearchUrl(opts: SearchOptions): string {
   put("sortorder", opts.sortorder ?? "5");
   put("pageSize", opts.pageSize ?? 60);
   put("showPage", opts.page && opts.page > 1 ? opts.page : undefined);
+  put("customerId", opts.customerId);
   if (opts.certified) qs.set("certified", "true");
+  for (const [key, value] of Object.entries(opts.facets ?? {})) {
+    if (FACET_PARAM_ALLOWLIST.has(key) && value) qs.set(key, value);
+  }
   qs.set("currencyId", config.currencyId);
   return `${config.baseUrl}/search/index.htm?${qs.toString()}`;
 }

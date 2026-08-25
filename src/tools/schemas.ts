@@ -39,6 +39,12 @@ export const searchInput = {
       "Cap the number of listings returned (1-60); useful for shortlisting without parsing a full page",
     ),
   certified: z.boolean().optional().describe("Only Chrono24 Certified listings"),
+  facets: z
+    .record(z.string())
+    .optional()
+    .describe(
+      'Extra facet filters as param->value pairs, e.g. {"caseMaterials": "4", "braceletMaterial": "407"}. Discover names/values via list_filters',
+    ),
 };
 
 export const getWatchInput = {
@@ -64,8 +70,50 @@ export const findModelsInput = {
   brand: z.string().describe("Brand name (e.g. 'Rolex'), brand id from list_brands (e.g. '221'), or slug"),
 };
 
+export const listFiltersInput = {
+  name: z
+    .string()
+    .optional()
+    .describe("Optional exact select name to fetch, e.g. 'caseMaterials'. Omit to list all facets"),
+};
+
+export const getPriceStatsInput = {
+  query: z.string().optional().describe("Free-text search scope"),
+  manufacturerIds: z.string().optional().describe("Brand id from list_brands"),
+  models: z.string().optional().describe("Model id from find_models"),
+  referenceNumber: z.string().optional().describe("Reference number filter"),
+  priceFrom: z.number().int().optional().describe("Minimum price in USD"),
+  priceTo: z.number().int().optional().describe("Maximum price in USD"),
+  condition: z.enum(["new", "used"]).optional(),
+  year: z.number().int().optional(),
+  countries: z.array(z.string().length(2)).max(10).optional(),
+  facets: z.record(z.string()).optional().describe("Facet filters, see list_filters"),
+};
+
+export const getDealerListingsInput = {
+  customerId: z
+    .string()
+    .regex(/^\d+$/)
+    .describe("Seller customerId from get_watch's sellerIds - powers a dealer's inventory"),
+  page: z.number().int().min(1).optional(),
+  sort: z.enum(["relevance", "price_asc", "price_desc", "newest", "popularity"]).optional().default("newest"),
+};
+
+export const getDealerRatingsInput = {
+  dealerId: z
+    .string()
+    .regex(/^\d+$/)
+    .describe("Dealer id from get_watch's sellerIds (NOT the customerId) - powers reviews"),
+  size: z.number().int().min(1).max(50).optional().default(10).describe("Ratings per page (max 50)"),
+  offset: z.number().int().min(0).optional().default(0).describe("Offset for paging through ratings"),
+};
+
 export type SearchArgs = z.infer<z.ZodObject<typeof searchInput>>;
 export type GetWatchArgs = z.infer<z.ZodObject<typeof getWatchInput>>;
 export type GetWatchesArgs = z.infer<z.ZodObject<typeof getWatchesInput>>;
 export type ListBrandsArgs = z.infer<z.ZodObject<typeof listBrandsInput>>;
 export type FindModelsArgs = z.infer<z.ZodObject<typeof findModelsInput>>;
+export type ListFiltersArgs = z.infer<z.ZodObject<typeof listFiltersInput>>;
+export type GetPriceStatsArgs = z.infer<z.ZodObject<typeof getPriceStatsInput>>;
+export type GetDealerListingsArgs = z.infer<z.ZodObject<typeof getDealerListingsInput>>;
+export type GetDealerRatingsArgs = z.infer<z.ZodObject<typeof getDealerRatingsInput>>;

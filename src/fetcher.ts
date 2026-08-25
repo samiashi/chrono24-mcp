@@ -165,6 +165,23 @@ export class Fetcher {
     return this.navigate(url);
   }
 
+  async fetchJson(url: string): Promise<{ status: number; body: string }> {
+    await this.start();
+    const host = new URL(config.baseUrl).host;
+    if (!this.page!.url().includes(host)) {
+      await this.navigate(config.baseUrl + "/");
+    }
+    await this.waitForSlot();
+    const result = await this.page!.evaluate(async (u) => {
+      const r = await fetch(u, { credentials: "include" });
+      return { status: r.status, body: await r.text() };
+    }, url);
+    if (config.debug) {
+      console.error(`[fetchJson] ${result.status} ${url} (${result.body.length} bytes)`);
+    }
+    return result;
+  }
+
   async close() {
     if (this.context) {
       await this.context.close().catch(() => {});

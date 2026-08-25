@@ -107,6 +107,35 @@ export function resolveBrand(brands: Brand[], input: string): Brand | null {
   );
 }
 
+export interface Facet {
+  name: string;
+  options: Array<{ value: string; label: string }>;
+}
+
+const NON_FACET_SELECTS = new Set(["manufacturerIds", "sortorder", "appearance"]);
+
+export function parseFacets(html: string): Facet[] {
+  const $ = load(html);
+  const facets: Facet[] = [];
+  $("select[name]").each((_, el) => {
+    const name = ($(el).attr("name") ?? "").trim();
+    if (!name || NON_FACET_SELECTS.has(name)) return;
+    const options: Array<{ value: string; label: string }> = [];
+    $(el)
+      .find("option")
+      .each((__, opt) => {
+        const value = ($(opt).attr("value") ?? "").trim();
+        const label = $(opt).text().trim();
+        if (value && label) options.push({ value, label });
+      });
+    if (options.length > 0) facets.push({ name, options });
+  });
+  if (facets.length < 3) {
+    warnDrift("taxonomy", `only ${facets.length} facet selects found on search page`);
+  }
+  return facets;
+}
+
 export function countSelectOptions(html: string, name: string): number {
   const $: CheerioAPI = load(html);
   return $(`select[name="${name}"] option`).length;
