@@ -1,0 +1,47 @@
+{
+  "name": "chrono24-mcp",
+  "version": "0.1.0",
+  "description": "Chrono24 watch-marketplace MCP server - search listings and inspect watch details via a browser-based fetcher that passes Cloudflare",
+  "license": "MIT",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": {
+    "chrono24-mcp": "build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "mcpName": "io.github.samiashi/chrono24-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/samiashi/chrono24-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "modelcontextprotocol",
+    "chrono24",
+    "watches",
+    "horology",
+    "scraper"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "smoke": "tsx scripts/smoke.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "cheerio": "^1.0.0",
+    "playwright": "^1.49.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
