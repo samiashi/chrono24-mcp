@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { chromium, type BrowserContext, type Page } from "playwright";
+import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { config } from "./config.js";
 import { CHRONO24_USER_AGENT } from "./userAgent.js";
 
@@ -52,7 +52,13 @@ export class Fetcher {
       );
     }
     if (!this.context) {
-      this.context = await chromium.launchPersistentContext(config.profileDir, base);
+      try {
+        this.context = await chromium.launchPersistentContext(config.profileDir, base);
+      } catch (err) {
+        throw new Error(
+          `No browser available. Install Google Chrome, or run "npx playwright install chromium" for the bundled fallback (${err instanceof Error ? err.message : err})`
+        );
+      }
     }
     await this.context.addInitScript(spoofWebdriver);
     const [first] = this.context.pages();

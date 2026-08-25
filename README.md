@@ -18,15 +18,17 @@ Chrono24 has no public API and sits behind a Cloudflare managed challenge that b
 ## Requirements
 
 - Node >= 20
-- Google Chrome installed (recommended). Without it, the bundled Playwright Chromium is used as fallback (`npx playwright install chromium` if needed).
+- Google Chrome installed (recommended). Without it, install the bundled-browser fallback once: `npx playwright install chromium`.
 - First run may take ~15-30s to clear the Cloudflare challenge.
 
 ## Setup
 
+No repo clone needed - run straight from npm with `npx`.
+
 ### Claude Code
 
 ```bash
-claude mcp add chrono24 -- node /absolute/path/to/chrono24-mcp/build/index.js
+claude mcp add chrono24 -- npx -y chrono24-mcp
 ```
 
 or project scope via `.mcp.json`:
@@ -35,8 +37,8 @@ or project scope via `.mcp.json`:
 {
   "mcpServers": {
     "chrono24": {
-      "command": "node",
-      "args": ["/absolute/path/to/chrono24-mcp/build/index.js"]
+      "command": "npx",
+      "args": ["-y", "chrono24-mcp"]
     }
   }
 }
@@ -50,8 +52,8 @@ or project scope via `.mcp.json`:
 {
   "mcpServers": {
     "chrono24": {
-      "command": "node",
-      "args": ["/absolute/path/to/chrono24-mcp/build/index.js"]
+      "command": "npx",
+      "args": ["-y", "chrono24-mcp"]
     }
   }
 }
@@ -63,8 +65,8 @@ Add to `~/.codex/config.toml` (shared by Codex CLI, IDE extension and desktop ap
 
 ```toml
 [mcp_servers.chrono24]
-command = "node"
-args = ["/absolute/path/to/chrono24-mcp/build/index.js"]
+command = "npx"
+args = ["-y", "chrono24-mcp"]
 tool_timeout_sec = 120
 ```
 
@@ -76,11 +78,18 @@ tool_timeout_sec = 120
 {
   "mcpServers": {
     "chrono24": {
-      "command": "node",
-      "args": ["/absolute/path/to/chrono24-mcp/build/index.js"]
+      "command": "npx",
+      "args": ["-y", "chrono24-mcp"]
     }
   }
 }
+```
+
+### Global install alternative
+
+```bash
+npm i -g chrono24-mcp
+# then use "chrono24-mcp" as the command in any client config
 ```
 
 ### Run from source
