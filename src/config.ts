@@ -19,6 +19,9 @@ export const config = {
   baseUrl: process.env.CHRONO24_BASE_URL ?? "https://www.chrono24.com",
   currencyId: process.env.CURRENCY_ID ?? "USD",
   requestDelayMs: numFrom("REQUEST_DELAY_MS", process.env.REQUEST_DELAY_MS, 3500),
+  // lightweight same-origin JSON APIs (ratings.json) that the site's own
+  // pages call freely - politeness spacing, but shorter than page scrapes
+  jsonDelayMs: numFrom("JSON_REQUEST_DELAY_MS", process.env.JSON_REQUEST_DELAY_MS, 1500),
   headless: boolFrom(process.env.HEADLESS, true),
   chromeChannel: boolFrom(process.env.CHROME_CHANNEL, true),
   profileDir: process.env.PROFILE_DIR ?? defaultProfileDir,

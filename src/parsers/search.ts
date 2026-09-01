@@ -136,6 +136,33 @@ export function buildPagedUrl(canonicalUrl: string, page1RequestUrl: string, pag
 
 const PRICE_VALUE_RE = /[\d.,]+/;
 
+// Chrono24 assigns the session currency by geolocation and ignores the
+// currencyId URL param (probed live 2026-09 with fresh profiles) - so the
+// truthful currency comes from the prices themselves. Multi-char symbols
+// must match before the bare "$".
+const CURRENCY_HINTS: Array<[RegExp, string]> = [
+  [/\bAED\b/, "AED"],
+  [/\bCHF\b/, "CHF"],
+  [/HK\$|\bHKD\b/, "HKD"],
+  [/C\$|\bCAD\b/, "CAD"],
+  [/A\$|\bAUD\b/, "AUD"],
+  [/£|\bGBP\b/, "GBP"],
+  [/€|\bEUR\b/, "EUR"],
+  [/¥|\bJPY\b/, "JPY"],
+  [/\bSGD\b/, "SGD"],
+  [/\$|\bUSD\b/, "USD"],
+];
+
+export function detectCurrency(displays: Array<string | null | undefined>): string | null {
+  for (const display of displays) {
+    if (!display) continue;
+    for (const [re, code] of CURRENCY_HINTS) {
+      if (re.test(display)) return code;
+    }
+  }
+  return null;
+}
+
 // Handles both separator conventions: "10,307.50" / "10.307,50" / "1.234.567".
 // A lone separator followed by exactly 3 digits is grouping (cards show no cents).
 export function parseLocalizedNumber(raw: string): number | null {

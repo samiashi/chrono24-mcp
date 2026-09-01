@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPagedUrl,
   buildSearchUrl,
+  detectCurrency,
   parseLocalizedNumber,
   parseSearchResults,
   partitionFacets,
@@ -127,6 +128,25 @@ describe("facet partitioning", () => {
 
   it("handles missing facets", () => {
     expect(partitionFacets(undefined)).toEqual({ applied: {}, ignored: [] });
+  });
+});
+
+describe("currency detection", () => {
+  it.each([
+    ["$16,842", "USD"],
+    ["AED 61,900", "AED"],
+    ["€12.500", "EUR"],
+    ["£9,100", "GBP"],
+    ["CHF 8,900", "CHF"],
+    ["HK$120,000", "HKD"],
+    ["A$4,200", "AUD"],
+  ])("detects %s as %s", (display, code) => {
+    expect(detectCurrency([display])).toBe(code);
+  });
+
+  it("skips null displays and returns null when nothing matches", () => {
+    expect(detectCurrency([null, undefined, "Price on request"])).toBeNull();
+    expect(detectCurrency([null, "AED 5,000"])).toBe("AED");
   });
 });
 

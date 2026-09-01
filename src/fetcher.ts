@@ -188,9 +188,9 @@ export class Fetcher {
     return this.page;
   }
 
-  private async waitForSlot() {
+  private async waitForSlot(delayMs = config.requestDelayMs) {
     const since = Date.now() - this.lastRequestAt;
-    const wait = config.requestDelayMs - since;
+    const wait = delayMs - since;
     if (wait > 0) await sleep(wait + Math.random() * 500);
     this.lastRequestAt = Date.now();
   }
@@ -211,14 +211,20 @@ export class Fetcher {
     });
   }
 
-  private async settle(page: Page, status: number) {
+  private async settle(page: Page, status: number, onWait?: (message: string) => void) {
     const challengedStatus = status === 403 || status === 503;
-    const deadline = Date.now() + config.challengeTimeoutMs;
+    const started = Date.now();
+    const deadline = started + config.challengeTimeoutMs;
     // a small body alone (no selector/title/status signal) gets only a short grace
     // period before we accept the page - some legitimate pages are just tiny
-    const softDeadline = Date.now() + 5000;
+    const softDeadline = started + 5000;
     let last: Snapshot | null = null;
+    let polls = 0;
     while (Date.now() < deadline) {
+      if (polls > 0 && polls % 5 === 0) {
+        onWait?.(`waiting for Cloudflare challenge to clear (${Math.round((Date.now() - started) / 1000)}s)`);
+      }
+      polls++;
       try {
         last = await this.inspect(page);
       } catch {
@@ -237,8 +243,9 @@ export class Fetcher {
     );
   }
 
-  private async navigate(url: string): Promise<FetchResult> {
+  private async navigate(url: string, onWait?: (message: string) => void): Promise<FetchResult> {
     await this.waitForSlot();
+    const navStart = Date.now();
     const page = await this.activePage();
     let response: Awaited<ReturnType<Page["goto"]>>;
     try {
@@ -251,7 +258,9 @@ export class Fetcher {
       throw new Error(`Navigation failed for ${url}: ${msg}`, { cause: err });
     }
     const status = response?.status() ?? 0;
-    await this.settle(page, status);
+    await this.settle(page, status, onWait);
+    this.telemetryData.pageRequests++;
+    this.telemetryData.navMsTotal += Date.now() - navStart;
     const html = await page.content();
     if (config.debug) {
       console.error(`[fetch] ${status} ${url} -> ${page.url()} (${html.length} bytes)`);
@@ -259,22 +268,25 @@ export class Fetcher {
     return { status, html, finalUrl: page.url() };
   }
 
-  async fetch(url: string): Promise<FetchResult> {
+  async fetch(url: string, onWait?: (message: string) => void): Promise<FetchResult> {
     return this.enqueue(async () => {
       await this.start();
       try {
-        return await this.navigate(url);
+        return await this.navigate(url, onWait);
       } catch (err) {
         if (!(err instanceof ChallengeError)) throw err;
+        this.telemetryData.challengeRetries++;
         console.error("[fetcher] challenge hit, warming up on homepage and retrying once");
+        onWait?.("Cloudflare challenge hit - warming up on the homepage and retrying");
         try {
-          await this.navigate(config.baseUrl + "/");
+          await this.navigate(config.baseUrl + "/", onWait);
         } catch (homeErr) {
           if (!(homeErr instanceof ChallengeError)) throw homeErr;
           // clearance often lands moments after our polling window expires -
           // the final target attempt below usually succeeds anyway
+          onWait?.("challenge still up after warmup - one final attempt on the target page");
         }
-        return this.navigate(url);
+        return this.navigate(url, onWait);
       }
     });
   }
@@ -285,7 +297,7 @@ export class Fetcher {
       const host = new URL(config.baseUrl).host;
       const page = await this.activePage();
       if (page.url().includes(host)) {
-        await this.waitForSlot();
+        await this.waitForSlot(config.jsonDelayMs);
       } else {
         // navigate() already pays the politeness delay for this slot
         await this.navigate(config.baseUrl + "/");
@@ -296,6 +308,7 @@ export class Fetcher {
         const r = await fetch(u, { credentials: "include" });
         return { status: r.status, body: await r.text() };
       }, url);
+      this.telemetryData.jsonRequests++;
       if (config.debug) {
         console.error(`[fetchJson] ${result.status} ${url} (${result.body.length} bytes)`);
       }
@@ -304,6 +317,25 @@ export class Fetcher {
   }
 
   private launchedChannel: "chrome" | "chromium" | null = null;
+
+  private telemetryData = {
+    pageRequests: 0,
+    jsonRequests: 0,
+    binaryRequests: 0,
+    challengeRetries: 0,
+    navMsTotal: 0,
+  };
+
+  telemetry() {
+    const t = this.telemetryData;
+    return {
+      pageRequests: t.pageRequests,
+      jsonRequests: t.jsonRequests,
+      binaryRequests: t.binaryRequests,
+      challengeRetries: t.challengeRetries,
+      avgPageMs: t.pageRequests ? Math.round(t.navMsTotal / t.pageRequests) : null,
+    };
+  }
 
   status(): {
     running: boolean;
@@ -332,6 +364,7 @@ export class Fetcher {
       const contentType = res.headers()["content-type"] ?? "";
       if (status !== 200) return { status, contentType, base64: "" };
       const body = await res.body();
+      this.telemetryData.binaryRequests++;
       if (body.length > 2_000_000) return { status, contentType, base64: "" };
       return { status, contentType, base64: body.toString("base64") };
     });

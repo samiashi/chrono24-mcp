@@ -12,6 +12,7 @@ import { Fetcher, type FetchResult } from "./fetcher.js";
 import {
   buildPagedUrl,
   buildSearchUrl,
+  detectCurrency,
   parseSearchResults,
   partitionFacets,
   resolveSort,
@@ -79,6 +80,8 @@ import {
   getDealerRatingsOutput,
   getDealerRatingSummaryInput,
   getDealerRatingSummaryOutput,
+  getDealerRatingSummariesInput,
+  getDealerRatingSummariesOutput,
   getWatchesInput,
   getWatchesOutput,
   getWatchInput,
@@ -104,6 +107,7 @@ const INSTRUCTIONS = [
   "General workflow: search_listings, then get_watch or get_watches (batch capped at " +
     config.maxBatch +
     ") on a shortlist; get_watch_photos to visually inspect condition.",
+  "Free-text queries match fuzzily - resolve precise ids with find_models (or pass referenceNumber) when the exact variant matters.",
   "Empty result sets are valid outcomes, not errors. A not-found error on get_watch means the listing was sold or removed.",
   "The first request of a session may take 60-120s if a Cloudflare challenge must clear; on challenge errors wait ~30s and retry once, and if it persists ask the user to set HEADLESS=false.",
 ].join(" ");
@@ -132,15 +136,23 @@ type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 // lets clients with resetTimeoutOnProgress survive long calls (batches,
 // rating summaries, challenged cold starts); silently a no-op when the
 // client did not request progress
-function reportProgress(extra: ToolExtra, progress: number, total: number, message: string) {
+function reportProgress(extra: ToolExtra, progress: number, total: number | undefined, message: string) {
   const progressToken = extra._meta?.progressToken;
   if (progressToken === undefined) return;
   void extra
     .sendNotification({
       method: "notifications/progress",
-      params: { progressToken, progress, total, message },
+      params: { progressToken, progress, ...(total !== undefined ? { total } : {}), message },
     })
     .catch(() => {});
+}
+
+// heartbeat for the Cloudflare challenge wait inside a fetch - keeps clients
+// with resetTimeoutOnProgress alive through 45-135s clearance cycles
+function challengeHeartbeat(extra?: ToolExtra): ((message: string) => void) | undefined {
+  if (!extra) return undefined;
+  let beats = 0;
+  return (message) => reportProgress(extra, ++beats, undefined, message);
 }
 
 const fail = (message: string, hint?: string): ToolResult => ({
@@ -172,8 +184,8 @@ function hintFor(err: unknown): string | undefined {
 const failFrom = (err: unknown): ToolResult =>
   fail(err instanceof Error ? err.message : String(err), hintFor(err));
 
-async function fetchOk(url: string): Promise<FetchResult> {
-  const res = await fetcher.fetch(url);
+async function fetchOk(url: string, extra?: ToolExtra): Promise<FetchResult> {
+  const res = await fetcher.fetch(url, challengeHeartbeat(extra));
   if (res.status >= 400) {
     throw new Error(`Upstream returned HTTP ${res.status} for ${url}`);
   }
@@ -185,18 +197,27 @@ async function fetchOk(url: string): Promise<FetchResult> {
 // (e.g. not-found detection) keep failures out of the cache. Concurrent
 // identical misses share one in-flight fetch instead of paying twice.
 const inflight = new Map<string, Promise<unknown>>();
+const cacheStats = { hits: 0, misses: 0 };
 async function cachedParse<T>(
   key: string,
   ttlS: number,
   url: string,
   parse: (res: FetchResult) => T,
+  extra?: ToolExtra,
 ): Promise<T> {
   const hit = cache.get<T>(key);
-  if (hit !== undefined) return hit;
+  if (hit !== undefined) {
+    cacheStats.hits++;
+    return hit;
+  }
   const pending = inflight.get(key);
-  if (pending) return pending as Promise<T>;
+  if (pending) {
+    cacheStats.hits++;
+    return pending as Promise<T>;
+  }
+  cacheStats.misses++;
   const job = (async () => {
-    const value = parse(await fetchOk(url));
+    const value = parse(await fetchOk(url, extra));
     cache.set(key, value, ttlS);
     return value;
   })().finally(() => inflight.delete(key));
@@ -209,13 +230,22 @@ function pageMeta(parsed: SearchResult): { totalPages: number | null; hasMore: b
   return { totalPages, hasMore: totalPages !== null ? parsed.page < totalPages : null };
 }
 
+// truthful per-response currency: derived from the prices themselves since
+// Chrono24 assigns currency by geolocation and ignores the currencyId param
+const currencyOf = (parsed: SearchResult) =>
+  detectCurrency(parsed.listings.map((l) => l.priceDisplay)) ?? config.currencyId;
+
 // Page 1 goes through /search/index.htm (which may redirect to a canonical
 // brand/model page); deeper pages must be requested at that canonical URL
 // with the lowercase showpage param, or Chrono24 silently serves page 1.
 async function pagedSearch(opts: SearchOptions, page: number, extra?: ToolExtra): Promise<SearchResult> {
   const page1Url = buildSearchUrl(opts);
-  const first = await cachedParse(`search:${page1Url}`, config.searchCacheTtlS, page1Url, (res) =>
-    parseSearchResults(res.html, res.finalUrl, 1),
+  const first = await cachedParse(
+    `search:${page1Url}`,
+    config.searchCacheTtlS,
+    page1Url,
+    (res) => parseSearchResults(res.html, res.finalUrl, 1),
+    extra,
   );
   if (page <= 1) return first;
   // don't hit upstream for pages that cannot exist - out-of-range showpage
@@ -226,8 +256,12 @@ async function pagedSearch(opts: SearchOptions, page: number, extra?: ToolExtra)
   }
   if (extra) reportProgress(extra, 1, 2, `resolved canonical page, fetching page ${page}`);
   const pageUrl = buildPagedUrl(first.sourceUrl, page1Url, page);
-  return cachedParse(`search:${pageUrl}`, config.searchCacheTtlS, pageUrl, (res) =>
-    parseSearchResults(res.html, res.finalUrl, page),
+  return cachedParse(
+    `search:${pageUrl}`,
+    config.searchCacheTtlS,
+    pageUrl,
+    (res) => parseSearchResults(res.html, res.finalUrl, page),
+    extra,
   );
 }
 
@@ -309,7 +343,7 @@ server.registerTool(
   {
     title: "Search Chrono24 listings",
     description:
-      "Search Chrono24 watch listings. Returns up to 60 cards per page with id, url, title, price, location, seller type and thumbnail - enough to shortlist without fetching details.",
+      "Search Chrono24 watch listings. Returns up to 60 cards per page with id, url, title, price, location, seller type and thumbnail - enough to shortlist without fetching details. Free-text queries match fuzzily; for a precise model scope pass manufacturerIds + models (from find_models) or referenceNumber.",
     inputSchema: searchInput,
     outputSchema: searchOutput,
     annotations: READ_ONLY,
@@ -345,7 +379,7 @@ server.registerTool(
       return ok({
         ...parsed,
         ...meta,
-        currency: config.currencyId,
+        currency: currencyOf(parsed),
         listings,
         count: listings.length,
         ...(ignored.length ? { ignoredFacets: ignored } : {}),
@@ -379,12 +413,13 @@ function parseWatch(id: string): (res: FetchResult) => WatchPayload {
   };
 }
 
-const fetchWatch = (id: string): Promise<WatchPayload> =>
+const fetchWatch = (id: string, extra?: ToolExtra): Promise<WatchPayload> =>
   cachedParse(
     `detail:${id}`,
     config.detailCacheTtlS,
     `${config.baseUrl}/watches/--id${id}.htm`,
     parseWatch(id),
+    extra,
   );
 
 server.registerTool(
@@ -397,9 +432,9 @@ server.registerTool(
     outputSchema: getWatchOutput,
     annotations: READ_ONLY,
   },
-  async (args) => {
+  async (args, extra) => {
     try {
-      return ok(await fetchWatch(args.id));
+      return ok(await fetchWatch(args.id, extra));
     } catch (err) {
       return failFrom(err);
     }
@@ -444,7 +479,7 @@ server.registerTool(
       const results: Array<WatchPayload & { error?: string }> = [];
       for (const [i, id] of ids.entries()) {
         try {
-          results.push(await fetchWatch(id));
+          results.push(await fetchWatch(id, extra));
         } catch (err) {
           results.push(emptyDetail(id, err instanceof Error ? err.message : String(err)));
         }
@@ -667,7 +702,7 @@ server.registerTool(
         },
         totalCount: parsed.totalCount,
         sourceUrl: parsed.sourceUrl,
-        currency: config.currencyId,
+        currency: currencyOf(parsed),
         coverage,
         ...(pagesSampled ? { pagesSampled } : {}),
         stats,
@@ -716,7 +751,7 @@ server.registerTool(
         customerId: args.customerId,
         ...parsed,
         ...meta,
-        currency: config.currencyId,
+        currency: currencyOf(parsed),
         ...(meta.totalPages !== null && parsed.page > meta.totalPages
           ? { note: `Page ${parsed.page} is beyond the last page (${meta.totalPages}); empty page returned.` }
           : {}),
@@ -762,47 +797,106 @@ server.registerTool(
   },
 );
 
+interface RatingSummary {
+  dealerId: string;
+  total: number;
+  average: number | null;
+  histogram: Record<string, number>;
+}
+
+async function computeDealerSummary(
+  dealerId: string,
+  onStar?: (done: number) => void,
+): Promise<RatingSummary> {
+  const cacheKey = `ratingsummary:${dealerId}`;
+  const hit = cache.get<RatingSummary>(cacheKey);
+  if (hit) return hit;
+  const histogram: Record<string, number> = {};
+  for (const [i, stars] of [5, 4, 3, 2, 1].entries()) {
+    const res = await fetcher.fetchJson(
+      `${config.baseUrl}/api/merchant/ratings.json?dealerId=${dealerId}&size=1&offset=0&stars=${stars}&sorting=Relevance`,
+    );
+    if (res.status !== 200) {
+      throw new Error(`Ratings request failed with HTTP ${res.status}`);
+    }
+    const parsed = parseRatingsSafe(res.body);
+    if (!parsed) {
+      throw new Error(
+        "Ratings endpoint returned non-JSON (likely a Cloudflare challenge page served with status 200)",
+      );
+    }
+    histogram[String(stars)] = parsed.filteredTotal;
+    onStar?.(i + 1);
+  }
+  const total = Object.values(histogram).reduce((a, b) => a + b, 0);
+  const weighted = [5, 4, 3, 2, 1].reduce((sum, st) => sum + st * histogram[String(st)], 0);
+  const payload = {
+    dealerId,
+    total,
+    average: total > 0 ? Math.round((weighted / total) * 100) / 100 : null,
+    histogram,
+  };
+  cache.set(cacheKey, payload, config.detailCacheTtlS);
+  return payload;
+}
+
 server.registerTool(
   "get_dealer_rating_summary",
   {
     title: "Get dealer rating summary",
     description:
-      "Star histogram and weighted average rating for a dealer, reconstructed from per-star review counts. Costs 5 polite requests (~20s uncached, then cached 30 min) - use it to vet an unfamiliar dealer before recommending a purchase.",
+      "Star histogram and weighted average rating for a dealer, reconstructed from per-star review counts. 5 lightweight requests (~8s uncached, then cached 30 min) - use it to vet an unfamiliar dealer before recommending a purchase. For several dealers, prefer get_dealer_rating_summaries.",
     inputSchema: getDealerRatingSummaryInput,
     outputSchema: getDealerRatingSummaryOutput,
     annotations: READ_ONLY,
   },
   async (args, extra) => {
     try {
-      const cacheKey = `ratingsummary:${args.dealerId}`;
-      const hit = cache.get<Record<string, unknown>>(cacheKey);
-      if (hit) return ok(hit);
-      const histogram: Record<string, number> = {};
-      for (const [i, stars] of [5, 4, 3, 2, 1].entries()) {
-        const res = await fetcher.fetchJson(
-          `${config.baseUrl}/api/merchant/ratings.json?dealerId=${args.dealerId}&size=1&offset=0&stars=${stars}&sorting=Relevance`,
-        );
-        if (res.status !== 200) {
-          return fail(
-            `Ratings request failed with HTTP ${res.status}`,
-            hintFor(new Error(`HTTP ${res.status}`)),
-          );
+      return ok(
+        await computeDealerSummary(args.dealerId, (done) =>
+          reportProgress(extra, done, 5, `counted star bucket ${done}/5`),
+        ),
+      );
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+server.registerTool(
+  "get_dealer_rating_summaries",
+  {
+    title: "Get dealer rating summaries (batch)",
+    description:
+      "Star histograms and average ratings for up to 5 dealers in one call (~8s per uncached dealer, cached 30 min). Vet all shortlisted sellers at once; per-dealer failures don't break the batch.",
+    inputSchema: getDealerRatingSummariesInput,
+    outputSchema: getDealerRatingSummariesOutput,
+    annotations: READ_ONLY,
+  },
+  async (args, extra) => {
+    try {
+      const ids = [...new Set(args.dealerIds)];
+      const summaries = [];
+      for (const [i, dealerId] of ids.entries()) {
+        try {
+          const s = await computeDealerSummary(dealerId);
+          summaries.push({ dealerId, total: s.total, average: s.average, histogram: s.histogram });
+        } catch (err) {
+          summaries.push({
+            dealerId,
+            total: null,
+            average: null,
+            histogram: null,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
-        const parsed = parseRatingsSafe(res.body);
-        if (!parsed) return failNonJsonRatings();
-        histogram[String(stars)] = parsed.filteredTotal;
-        reportProgress(extra, i + 1, 5, `counted ${stars}-star reviews`);
+        reportProgress(extra, i + 1, ids.length, `vetted dealer ${dealerId}`);
       }
-      const total = Object.values(histogram).reduce((a, b) => a + b, 0);
-      const weighted = [5, 4, 3, 2, 1].reduce((sum, s) => sum + s * histogram[String(s)], 0);
-      const payload = {
-        dealerId: args.dealerId,
-        total,
-        average: total > 0 ? Math.round((weighted / total) * 100) / 100 : null,
-        histogram,
-      };
-      cache.set(cacheKey, payload, config.detailCacheTtlS);
-      return ok(payload);
+      return ok({
+        count: summaries.length,
+        summaries,
+        note: "Per-dealer errors appear in the entry's error field; other entries remain valid.",
+      });
     } catch (err) {
       return failFrom(err);
     }
@@ -814,7 +908,7 @@ server.registerTool(
   {
     title: "Find deals",
     description:
-      "Find listings priced below market for a watch scope: computes full-range price stats (up to 3 polite requests), then returns the cheapest listings at or below the market p25 with their percentage below median. The one-call answer to 'find me a good deal on X'.",
+      "Find listings priced below market for a watch scope: computes full-range price stats (up to 3 polite requests), then returns the cheapest listings at or below the market p25 with their percentage below median. The one-call answer to 'find me a good deal on X'. Free-text scopes match fuzzily (a 'Black Bay 58 GMT' query can match plain Black Bay 58s) - prefer manufacturerIds + models or referenceNumber for precision.",
     inputSchema: findDealsInput,
     outputSchema: findDealsOutput,
     annotations: READ_ONLY,
@@ -838,7 +932,7 @@ server.registerTool(
       if (!stats) {
         return ok({
           totalCount: first.totalCount,
-          currency: config.currencyId,
+          currency: currencyOf(first),
           coverage,
           stats: null,
           deals: [],
@@ -865,13 +959,13 @@ server.registerTool(
         });
       return ok({
         totalCount: first.totalCount,
-        currency: config.currencyId,
+        currency: currencyOf(first),
         coverage,
         stats,
         deals,
         ...(ignored.length ? { ignoredFacets: ignored } : {}),
         sourceUrl: first.sourceUrl,
-        note: `${deals.length} listing(s) at or below the market p25 (${stats.p25} ${config.currencyId}); median is ${stats.median}. Vet the seller (get_dealer_rating_summary) before recommending a purchase.${ignored.length ? " " + IGNORED_FACETS_NOTE(ignored) : ""}`,
+        note: `${deals.length} listing(s) at or below the market p25 (${stats.p25} ${config.currencyId}); median is ${stats.median}. Vet the seller (get_dealer_rating_summary) before recommending a purchase. Cross-border purchases may add import duty/VAT not included in listed prices.${ignored.length ? " " + IGNORED_FACETS_NOTE(ignored) : ""}`,
       });
     } catch (err) {
       return failFrom(err);
@@ -916,7 +1010,7 @@ server.registerTool(
         pagesFetched: limit,
         truncated: totalPages > limit,
         count: listings.length,
-        currency: config.currencyId,
+        currency: currencyOf(first),
         listings,
         ...(ignored.length ? { ignoredFacets: ignored, note: IGNORED_FACETS_NOTE(ignored) } : {}),
         sourceUrl: first.sourceUrl,
@@ -940,6 +1034,7 @@ server.registerTool(
   async (args, extra) => {
     try {
       const entries = [];
+      let detected: string | null = null;
       for (const [i, item] of args.items.entries()) {
         const label =
           item.label ??
@@ -957,6 +1052,7 @@ server.registerTool(
         }
         try {
           const parsed = await pagedSearch(priceScopeOpts(item, {}), 1);
+          detected ??= detectCurrency(parsed.listings.map((l) => l.priceDisplay));
           const prices = parsed.listings.map((l) => l.priceValue).filter((p): p is number => p !== null);
           const stats = computeStats(prices);
           entries.push({
@@ -984,7 +1080,7 @@ server.registerTool(
       const sum = (pick: (s: { median: number; p25: number; p75: number }) => number) =>
         priced.length ? priced.reduce((acc, e) => acc + pick(e.stats!), 0) : null;
       return ok({
-        currency: config.currencyId,
+        currency: detected ?? config.currencyId,
         items: entries,
         totals: {
           itemsPriced: priced.length,
@@ -1207,6 +1303,7 @@ server.registerTool(
         version: VERSION,
         uptimeS: Math.round(process.uptime()),
         browser: { ...fetcher.status(), headless: config.headless },
+        telemetry: { ...fetcher.telemetry(), cacheHits: cacheStats.hits, cacheMisses: cacheStats.misses },
         cacheEntries: cache.size,
         taxonomyDiskFresh: diskRead(TAXONOMY_DISK, "broad", config.taxonomyCacheTtlS) !== null,
         savedSearches: Object.keys(readSavedSearches()).length,
@@ -1519,7 +1616,7 @@ server.registerTool(
     const checks: Array<{ name: string; pass: boolean; detail: string }> = [];
     try {
       const url = buildSearchUrl({ query: "Rolex Submariner", sortorder: resolveSort("newest") });
-      const res = await fetchOk(url);
+      const res = await fetchOk(url, extra);
       const parsed = parseSearchResults(res.html, res.finalUrl, 1);
       checks.push({
         name: "search-cards",
@@ -1539,7 +1636,7 @@ server.registerTool(
       });
       reportProgress(extra, 1, 2, "search parsed, fetching a detail page");
       if (first?.id) {
-        const dres = await fetchOk(`${config.baseUrl}/watches/--id${first.id}.htm`);
+        const dres = await fetchOk(`${config.baseUrl}/watches/--id${first.id}.htm`, extra);
         const detail = parseDetail(dres.html);
         checks.push({
           name: "detail-content",

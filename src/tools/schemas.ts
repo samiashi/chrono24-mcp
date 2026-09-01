@@ -501,6 +501,15 @@ export const serverStatusOutput = {
     lastRequestAgoS: z.number().nullable(),
     queuedRequests: z.number(),
   }),
+  telemetry: z.object({
+    pageRequests: z.number(),
+    jsonRequests: z.number(),
+    binaryRequests: z.number(),
+    challengeRetries: z.number(),
+    avgPageMs: z.number().nullable(),
+    cacheHits: z.number(),
+    cacheMisses: z.number(),
+  }),
   cacheEntries: z.number(),
   taxonomyDiskFresh: z.boolean(),
   savedSearches: z.number(),
@@ -612,5 +621,37 @@ export const healthCheckOutput = {
   allPass: z.boolean(),
   durationMs: z.number(),
   checks: z.array(z.object({ name: z.string(), pass: z.boolean(), detail: z.string() })),
+  note: z.string(),
+};
+
+// ---- bulk dealer rating summaries ----
+
+export const getDealerRatingSummariesInput = {
+  dealerIds: z
+    .array(z.string().regex(/^\d+$/))
+    .min(1)
+    .max(5)
+    .describe("Up to 5 dealerIds (from get_watch's sellerIds); ~8s per uncached dealer"),
+};
+
+const starHistogram = z.object({
+  "5": z.number(),
+  "4": z.number(),
+  "3": z.number(),
+  "2": z.number(),
+  "1": z.number(),
+});
+
+export const getDealerRatingSummariesOutput = {
+  count: z.number(),
+  summaries: z.array(
+    z.object({
+      dealerId: z.string(),
+      total: z.number().nullable(),
+      average: z.number().nullable(),
+      histogram: starHistogram.nullable(),
+      error: z.string().optional(),
+    }),
+  ),
   note: z.string(),
 };
