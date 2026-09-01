@@ -35,7 +35,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.dev.json",
     "smoke": "tsx scripts/smoke.mjs",
     "capture-fixtures": "tsx scripts/capture-fixtures.ts",
     "prepublishOnly": "npm run build"

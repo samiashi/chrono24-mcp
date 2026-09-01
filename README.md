@@ -127,7 +127,7 @@ All tools are read-only and declare MCP `readOnlyHint`/`openWorldHint` annotatio
 | `PROFILE_DIR`          | `~/.cache/chrono24-mcp/profile` | Browser profile holding the Cloudflare clearance cookie.                                     |
 | `SEARCH_CACHE_TTL_S`   | `180`                           | Search cache TTL.                                                                            |
 | `DETAIL_CACHE_TTL_S`   | `1800`                          | Detail cache TTL.                                                                            |
-| `TAXONOMY_CACHE_TTL_S` | `86400`                         | Brand/model taxonomy cache TTL (also persisted to disk next to the profile dir).            |
+| `TAXONOMY_CACHE_TTL_S` | `86400`                         | Brand/model taxonomy cache TTL (also persisted to disk inside the profile dir).             |
 | `MAX_BATCH`            | `10`                            | Cap for `get_watches`.                                                                       |
 | `CURRENCY_ID`          | `USD`                           | Price currency for all requests (session-wide).                                             |
 | `NAVIGATION_TIMEOUT_MS`| `45000`                         | Playwright navigation timeout per request.                                                  |

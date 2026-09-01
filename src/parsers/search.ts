@@ -13,7 +13,6 @@ export interface SearchOptions {
   year?: number;
   countryIds?: string[];
   sortorder?: string;
-  page?: number;
   pageSize?: number;
   certified?: boolean;
   customerId?: string;
@@ -77,16 +76,38 @@ export function resolveSort(sort?: string): string {
   return SORT_MAP[sort ?? "newest"] ?? SORT_MAP.newest;
 }
 
+// Facet keys that are select-based filters on the site but map to dedicated
+// tool params instead of facet passthrough.
+export const FACET_USE_INSTEAD: Record<string, string> = {
+  countryIds: "countries",
+  usedOrNew: "condition",
+};
+
+export function partitionFacets(facets?: Record<string, string>): {
+  applied: Record<string, string>;
+  ignored: string[];
+} {
+  const applied: Record<string, string> = {};
+  const ignored: string[] = [];
+  for (const [key, value] of Object.entries(facets ?? {})) {
+    if (FACET_PARAM_ALLOWLIST.has(key) && value) applied[key] = value;
+    else ignored.push(key);
+  }
+  return { applied, ignored };
+}
+
 export function buildSearchUrl(opts: SearchOptions): string {
   const qs = new URLSearchParams();
   qs.set("dosearch", "true");
   const put = (k: string, v: unknown) => {
     if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
   };
-  put("query", opts.query);
+  // there is no working referenceNumber URL param (alone it renders an empty
+  // page, with a query it is dropped in the redirect) - the free-text search
+  // matches references well, so fold it into the query instead
+  put("query", [opts.query, opts.referenceNumber].filter(Boolean).join(" "));
   put("manufacturerIds", opts.manufacturerIds);
   put("models", opts.models);
-  put("referenceNumber", opts.referenceNumber);
   put("priceFrom", opts.priceFrom);
   put("priceTo", opts.priceTo);
   put("usedOrNew", opts.usedOrNew);
@@ -94,7 +115,6 @@ export function buildSearchUrl(opts: SearchOptions): string {
   for (const c of opts.countryIds ?? []) qs.append("countryIds", c);
   put("sortorder", opts.sortorder ?? "5");
   put("pageSize", opts.pageSize ?? 60);
-  put("showPage", opts.page && opts.page > 1 ? opts.page : undefined);
   put("customerId", opts.customerId);
   if (opts.certified) qs.set("certified", "true");
   for (const [key, value] of Object.entries(opts.facets ?? {})) {
@@ -102,6 +122,16 @@ export function buildSearchUrl(opts: SearchOptions): string {
   }
   qs.set("currencyId", opts.currencyId ?? config.currencyId);
   return `${config.baseUrl}/search/index.htm?${qs.toString()}`;
+}
+
+// Paging only works on the canonical (post-redirect) page: /search/index.htm
+// strips paging params during its redirect to brand/model pages, and the
+// param is the lowercase "showpage" - Chrono24 ignores "showPage".
+export function buildPagedUrl(canonicalUrl: string, page1RequestUrl: string, page: number): string {
+  const canonical = new URL(canonicalUrl);
+  const params = new URL(page1RequestUrl).searchParams;
+  params.set("showpage", String(page));
+  return `${canonical.origin}${canonical.pathname}?${params.toString()}`;
 }
 
 const PRICE_VALUE_RE = /[\d.,]+/;

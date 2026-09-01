@@ -131,7 +131,9 @@ export class Fetcher {
       }
     }
     this.context.on("close", () => {
-      console.error("[fetcher] browser context closed; will relaunch on next request");
+      if (!this.closing) {
+        console.error("[fetcher] browser context closed; will relaunch on next request");
+      }
       this.context = null;
       this.page = null;
       this.startPromise = null;
@@ -191,7 +193,13 @@ export class Fetcher {
     const softDeadline = Date.now() + 5000;
     let last: Snapshot | null = null;
     while (Date.now() < deadline) {
-      last = await this.inspect(page);
+      try {
+        last = await this.inspect(page);
+      } catch {
+        // the page navigated mid-inspect (Cloudflare reloads on clearance) - poll again
+        await sleep(500);
+        continue;
+      }
       const hardSignal = last.hasChallengeSelector || CHALLENGE_TITLE_RE.test(last.title);
       const softSignal = last.bodyBytes < 2000;
       if (!hardSignal && !softSignal) return;
@@ -263,7 +271,10 @@ export class Fetcher {
     });
   }
 
+  private closing = false;
+
   async close() {
+    this.closing = true;
     if (this.context) {
       await this.context.close().catch(() => {});
       this.context = null;

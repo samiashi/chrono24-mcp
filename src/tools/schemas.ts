@@ -135,6 +135,13 @@ const listingCard = z.object({
   imageUrl: z.string().nullable(),
 });
 
+const ignoredFacets = z
+  .array(z.string())
+  .optional()
+  .describe(
+    "Facet keys that were ignored because they are not passthrough params (e.g. countryIds -> use 'countries', usedOrNew -> use 'condition')",
+  );
+
 const searchPage = {
   totalCount: z.number().nullable(),
   count: z.number(),
@@ -144,6 +151,8 @@ const searchPage = {
   currency: z.string(),
   listings: z.array(listingCard),
   sourceUrl: z.string(),
+  ignoredFacets,
+  note: z.string().optional(),
 };
 
 export const searchOutput = searchPage;
@@ -200,12 +209,30 @@ export const findModelsOutput = {
 };
 
 const facetOption = z.object({ value: z.string(), label: z.string() });
+const facetPassthrough = z
+  .boolean()
+  .describe("Whether search_listings' facets param accepts this facet name");
+const facetUseInstead = z
+  .string()
+  .optional()
+  .describe("Dedicated search_listings param to use instead of this facet");
 
 export const listFiltersOutput = {
   count: z.number(),
-  facets: z.array(z.object({ name: z.string(), options: z.array(facetOption) })).optional(),
+  facets: z
+    .array(
+      z.object({
+        name: z.string(),
+        options: z.array(facetOption),
+        passthrough: facetPassthrough,
+        useInstead: facetUseInstead,
+      }),
+    )
+    .optional(),
   name: z.string().optional(),
   options: z.array(facetOption).optional(),
+  passthrough: facetPassthrough.optional(),
+  useInstead: facetUseInstead,
   note: z.string().optional(),
 };
 
@@ -235,6 +262,7 @@ export const getPriceStatsOutput = {
     })
     .nullable(),
   cheapest: z.array(listingCard),
+  ignoredFacets,
   note: z.string(),
 };
 

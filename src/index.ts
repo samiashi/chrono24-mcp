@@ -7,7 +7,17 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { TtlCache } from "./cache.js";
 import { config } from "./config.js";
 import { Fetcher, type FetchResult } from "./fetcher.js";
-import { buildSearchUrl, parseSearchResults, resolveSort, type SearchResult } from "./parsers/search.js";
+import {
+  buildPagedUrl,
+  buildSearchUrl,
+  parseSearchResults,
+  partitionFacets,
+  resolveSort,
+  FACET_PARAM_ALLOWLIST,
+  FACET_USE_INSTEAD,
+  type SearchOptions,
+  type SearchResult,
+} from "./parsers/search.js";
 import {
   extractCustomerId,
   extractDealerId,
@@ -96,7 +106,7 @@ class NotFoundError extends Error {}
 function hintFor(err: unknown): string | undefined {
   const msg = err instanceof Error ? err.message : String(err);
   if (err instanceof NotFoundError || /HTTP 404/.test(msg)) {
-    return "The page no longer exists upstream - the listing/dealer was likely sold or removed. Run search_listings again for current results.";
+    return "The page no longer exists upstream - the id may be wrong, or the listing/dealer/brand page was removed. Search again for current results.";
   }
   if (/HTTP (403|429)/.test(msg) || /cloudflare|challenge/i.test(msg)) {
     return "Upstream is rate-limiting or challenging us. Wait ~30s and retry once. If it persists, the user can restart with HEADLESS=false to complete the challenge interactively.";
@@ -120,7 +130,9 @@ async function fetchOk(url: string): Promise<FetchResult> {
 
 // Cache parsed payloads, never raw HTML: hits skip re-parsing and the cache
 // holds kilobytes instead of megabyte page snapshots. Throwing parsers
-// (e.g. not-found detection) keep failures out of the cache.
+// (e.g. not-found detection) keep failures out of the cache. Concurrent
+// identical misses share one in-flight fetch instead of paying twice.
+const inflight = new Map<string, Promise<unknown>>();
 async function cachedParse<T>(
   key: string,
   ttlS: number,
@@ -129,15 +141,55 @@ async function cachedParse<T>(
 ): Promise<T> {
   const hit = cache.get<T>(key);
   if (hit !== undefined) return hit;
-  const value = parse(await fetchOk(url));
-  cache.set(key, value, ttlS);
-  return value;
+  const pending = inflight.get(key);
+  if (pending) return pending as Promise<T>;
+  const job = (async () => {
+    const value = parse(await fetchOk(url));
+    cache.set(key, value, ttlS);
+    return value;
+  })().finally(() => inflight.delete(key));
+  inflight.set(key, job);
+  return job;
 }
 
 function pageMeta(parsed: SearchResult): { totalPages: number | null; hasMore: boolean | null } {
   const totalPages = parsed.totalCount !== null ? Math.max(1, Math.ceil(parsed.totalCount / 60)) : null;
   return { totalPages, hasMore: totalPages !== null ? parsed.page < totalPages : null };
 }
+
+// Page 1 goes through /search/index.htm (which may redirect to a canonical
+// brand/model page); deeper pages must be requested at that canonical URL
+// with the lowercase showpage param, or Chrono24 silently serves page 1.
+async function pagedSearch(opts: SearchOptions, page: number): Promise<SearchResult> {
+  const page1Url = buildSearchUrl(opts);
+  const first = await cachedParse(`search:${page1Url}`, config.searchCacheTtlS, page1Url, (res) =>
+    parseSearchResults(res.html, res.finalUrl, 1),
+  );
+  if (page <= 1) return first;
+  const pageUrl = buildPagedUrl(first.sourceUrl, page1Url, page);
+  return cachedParse(`search:${pageUrl}`, config.searchCacheTtlS, pageUrl, (res) =>
+    parseSearchResults(res.html, res.finalUrl, page),
+  );
+}
+
+function parseRatingsSafe(body: string): ReturnType<typeof parseRatings> | null {
+  try {
+    return parseRatings(body);
+  } catch {
+    return null;
+  }
+}
+
+const failNonJsonRatings = () =>
+  fail(
+    "Ratings endpoint returned non-JSON (likely a Cloudflare challenge page served with status 200)",
+    "Wait ~30s and retry once. If it persists, the user can restart with HEADLESS=false to complete the challenge interactively.",
+  );
+
+const IGNORED_FACETS_NOTE = (ignored: string[]) =>
+  `Ignored facet keys: ${ignored
+    .map((k) => (FACET_USE_INSTEAD[k] ? `${k} (use the '${FACET_USE_INSTEAD[k]}' param instead)` : k))
+    .join(", ")}. Only allowlisted facets pass through - see list_filters.`;
 
 server.registerTool(
   "search_listings",
@@ -151,23 +203,23 @@ server.registerTool(
   },
   async (args) => {
     try {
-      const url = buildSearchUrl({
-        query: args.query || undefined,
-        manufacturerIds: args.manufacturerIds,
-        models: args.models,
-        referenceNumber: args.referenceNumber,
-        priceFrom: args.priceFrom,
-        priceTo: args.priceTo,
-        usedOrNew: args.condition,
-        year: args.year,
-        countryIds: args.countries,
-        facets: args.facets,
-        sortorder: resolveSort(args.sort),
-        page: args.page,
-        certified: args.certified,
-      });
-      const parsed = await cachedParse(`search:${url}`, config.searchCacheTtlS, url, (res) =>
-        parseSearchResults(res.html, res.finalUrl, args.page ?? 1),
+      const { applied, ignored } = partitionFacets(args.facets);
+      const parsed = await pagedSearch(
+        {
+          query: args.query || undefined,
+          manufacturerIds: args.manufacturerIds,
+          models: args.models,
+          referenceNumber: args.referenceNumber,
+          priceFrom: args.priceFrom,
+          priceTo: args.priceTo,
+          usedOrNew: args.condition,
+          year: args.year,
+          countryIds: args.countries,
+          facets: applied,
+          sortorder: resolveSort(args.sort),
+          certified: args.certified,
+        },
+        args.page ?? 1,
       );
       const listings = args.limit ? parsed.listings.slice(0, args.limit) : parsed.listings;
       return ok({
@@ -176,6 +228,7 @@ server.registerTool(
         currency: config.currencyId,
         listings,
         count: listings.length,
+        ...(ignored.length ? { ignoredFacets: ignored, note: IGNORED_FACETS_NOTE(ignored) } : {}),
       });
     } catch (err) {
       return failFrom(err);
@@ -292,7 +345,9 @@ interface BroadTaxonomy {
   facets: Facet[];
 }
 
-const TAXONOMY_DISK = path.join(config.profileDir, "..", "taxonomy.json");
+// lives inside the profile dir so custom PROFILE_DIR setups don't write to an
+// unexpected parent directory; Chrome ignores unknown files in its user-data-dir
+const TAXONOMY_DISK = path.join(config.profileDir, "chrono24-taxonomy.json");
 
 function readTaxonomyDisk(): (BroadTaxonomy & { remainingS: number }) | null {
   try {
@@ -425,6 +480,10 @@ server.registerTool(
   async (args) => {
     try {
       const { facets } = await cachedBroadTaxonomy();
+      const annotate = (name: string) => ({
+        passthrough: FACET_PARAM_ALLOWLIST.has(name),
+        ...(FACET_USE_INSTEAD[name] ? { useInstead: FACET_USE_INSTEAD[name] } : {}),
+      });
       if (args.name) {
         const match = facets.find((f) => f.name === args.name);
         if (!match) {
@@ -433,9 +492,18 @@ server.registerTool(
             note: `No facet named "${args.name}". Available: ${facets.map((f) => f.name).join(", ")}`,
           });
         }
-        return ok({ count: match.options.length, name: match.name, options: match.options });
+        return ok({
+          count: match.options.length,
+          name: match.name,
+          options: match.options,
+          ...annotate(match.name),
+        });
       }
-      return ok({ count: facets.length, facets });
+      return ok({
+        count: facets.length,
+        facets: facets.map((f) => ({ ...f, ...annotate(f.name) })),
+        note: "Facets with passthrough=false are not accepted by search_listings' facets param; where useInstead is set, pass that dedicated tool param instead.",
+      });
     } catch (err) {
       return failFrom(err);
     }
@@ -454,22 +522,23 @@ server.registerTool(
   },
   async (args) => {
     try {
-      const url = buildSearchUrl({
-        query: args.query,
-        manufacturerIds: args.manufacturerIds,
-        models: args.models,
-        referenceNumber: args.referenceNumber,
-        priceFrom: args.priceFrom,
-        priceTo: args.priceTo,
-        usedOrNew: args.condition,
-        year: args.year,
-        countryIds: args.countries,
-        facets: args.facets,
-        sortorder: resolveSort("price_asc"),
-        pageSize: 60,
-      });
-      const parsed = await cachedParse(`search:${url}`, config.searchCacheTtlS, url, (res) =>
-        parseSearchResults(res.html, res.finalUrl, 1),
+      const { applied, ignored } = partitionFacets(args.facets);
+      const parsed = await pagedSearch(
+        {
+          query: args.query,
+          manufacturerIds: args.manufacturerIds,
+          models: args.models,
+          referenceNumber: args.referenceNumber,
+          priceFrom: args.priceFrom,
+          priceTo: args.priceTo,
+          usedOrNew: args.condition,
+          year: args.year,
+          countryIds: args.countries,
+          facets: applied,
+          sortorder: resolveSort("price_asc"),
+          pageSize: 60,
+        },
+        1,
       );
       const prices = parsed.listings.map((l) => l.priceValue).filter((p): p is number => p !== null);
       const stats = computeStats(prices);
@@ -490,11 +559,15 @@ server.registerTool(
         coverage,
         stats,
         cheapest: parsed.listings.filter((l) => l.priceValue !== null).slice(0, 3),
-        note: stats
-          ? coverage === "full"
-            ? `Stats cover all ${stats.sampleSize} matching priced listings.`
-            : `Stats computed from the ${stats.sampleSize} cheapest listings on page 1 (sorted price ascending); upper percentiles are lower-tail biased.`
-          : "No priced listings found for this scope.",
+        ...(ignored.length ? { ignoredFacets: ignored } : {}),
+        note: [
+          stats
+            ? coverage === "full"
+              ? `Stats cover all ${stats.sampleSize} matching priced listings.`
+              : `Stats computed from the ${stats.sampleSize} cheapest listings on page 1 (sorted price ascending); upper percentiles are lower-tail biased.`
+            : "No priced listings found for this scope.",
+          ...(ignored.length ? [IGNORED_FACETS_NOTE(ignored)] : []),
+        ].join(" "),
       });
     } catch (err) {
       return failFrom(err);
@@ -514,14 +587,13 @@ server.registerTool(
   },
   async (args) => {
     try {
-      const url = buildSearchUrl({
-        customerId: args.customerId,
-        sortorder: resolveSort(args.sort),
-        page: args.page,
-        pageSize: 60,
-      });
-      const parsed = await cachedParse(`search:${url}`, config.searchCacheTtlS, url, (res) =>
-        parseSearchResults(res.html, res.finalUrl, args.page ?? 1),
+      const parsed = await pagedSearch(
+        {
+          customerId: args.customerId,
+          sortorder: resolveSort(args.sort),
+          pageSize: 60,
+        },
+        args.page ?? 1,
       );
       return ok({
         customerId: args.customerId,
@@ -560,7 +632,8 @@ server.registerTool(
           hintFor(new Error(`HTTP ${res.status}`)),
         );
       }
-      const parsed = parseRatings(res.body);
+      const parsed = parseRatingsSafe(res.body);
+      if (!parsed) return failNonJsonRatings();
       cache.set(cacheKey, parsed, config.searchCacheTtlS);
       return ok({ dealerId: args.dealerId, ...parsed });
     } catch (err) {
@@ -595,7 +668,9 @@ server.registerTool(
             hintFor(new Error(`HTTP ${res.status}`)),
           );
         }
-        histogram[String(stars)] = parseRatings(res.body).filteredTotal;
+        const parsed = parseRatingsSafe(res.body);
+        if (!parsed) return failNonJsonRatings();
+        histogram[String(stars)] = parsed.filteredTotal;
       }
       const total = Object.values(histogram).reduce((a, b) => a + b, 0);
       const weighted = [5, 4, 3, 2, 1].reduce((sum, s) => sum + s * histogram[String(s)], 0);

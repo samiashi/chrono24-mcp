@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  buildPagedUrl,
   buildSearchUrl,
   parseLocalizedNumber,
   parseSearchResults,
+  partitionFacets,
   resolveSort,
   FACET_PARAM_ALLOWLIST,
 } from "../src/parsers/search.js";
@@ -71,14 +73,59 @@ describe("search url builder", () => {
     expect(url).toContain("countryIds=DE");
   });
 
-  it("omits showPage for page 1 and includes it beyond", () => {
-    expect(buildSearchUrl({ query: "x" })).not.toContain("showPage");
-    expect(buildSearchUrl({ query: "x", page: 3 })).toContain("showPage=3");
+  it("never emits paging params itself (paging happens on the canonical url)", () => {
+    expect(buildSearchUrl({ query: "x" })).not.toMatch(/showpage/i);
+  });
+
+  it("folds referenceNumber into the free-text query (no working URL param exists)", () => {
+    expect(buildSearchUrl({ query: "Rolex", referenceNumber: "116610lv" })).toContain("query=Rolex+116610lv");
+    expect(buildSearchUrl({ referenceNumber: "116610lv" })).toContain("query=116610lv");
+    expect(buildSearchUrl({ query: "Rolex", referenceNumber: "116610lv" })).not.toContain("referenceNumber=");
   });
 
   it("supports a per-request currency override", () => {
     expect(buildSearchUrl({ query: "x" })).toContain("currencyId=USD");
     expect(buildSearchUrl({ query: "x", currencyId: "EUR" })).toContain("currencyId=EUR");
+  });
+});
+
+describe("paged url builder", () => {
+  it("pages on the canonical redirect target with lowercase showpage", () => {
+    const page1Request =
+      "https://www.chrono24.com/search/index.htm?dosearch=true&query=Rolex+Submariner&sortorder=1&pageSize=60&currencyId=USD";
+    const canonical = "https://www.chrono24.com/rolex/submariner--mod1.htm?dosearch=true&sortorder=1";
+    const url = buildPagedUrl(canonical, page1Request, 3);
+    expect(url).toContain("https://www.chrono24.com/rolex/submariner--mod1.htm?");
+    expect(url).toContain("showpage=3");
+    expect(url).toContain("query=Rolex+Submariner");
+    expect(url).toContain("pageSize=60");
+    expect(url).not.toContain("showPage");
+  });
+
+  it("keeps the /search path when no redirect happened (dealer inventory)", () => {
+    const page1Request =
+      "https://www.chrono24.com/search/index.htm?dosearch=true&customerId=25566&sortorder=1&pageSize=60&currencyId=USD";
+    const url = buildPagedUrl(page1Request, page1Request, 2);
+    expect(url).toContain("/search/index.htm?");
+    expect(url).toContain("customerId=25566");
+    expect(url).toContain("showpage=2");
+  });
+});
+
+describe("facet partitioning", () => {
+  it("splits allowlisted facets from ignored ones", () => {
+    const { applied, ignored } = partitionFacets({
+      caseMaterials: "4",
+      countryIds: "US",
+      usedOrNew: "new",
+      bogus: "1",
+    });
+    expect(applied).toEqual({ caseMaterials: "4" });
+    expect(ignored.sort()).toEqual(["bogus", "countryIds", "usedOrNew"]);
+  });
+
+  it("handles missing facets", () => {
+    expect(partitionFacets(undefined)).toEqual({ applied: {}, ignored: [] });
   });
 });
 
