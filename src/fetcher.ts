@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { config } from "./config.js";
-import { CHRONO24_USER_AGENT } from "./userAgent.js";
+import { chromeUserAgent, FALLBACK_CHROME_MAJOR } from "./userAgent.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -22,11 +22,28 @@ interface Snapshot {
   hasChallengeSelector: boolean;
 }
 
+export class ChallengeError extends Error {}
+
+// All Chrono24 requests must stay strictly sequential (one page, polite spacing);
+// concurrent MCP tool calls would otherwise interleave page.goto/page.content.
+export function createSerializer() {
+  let queue: Promise<unknown> = Promise.resolve();
+  return function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const run = queue.then(fn, fn);
+    queue = run.catch(() => {});
+    return run;
+  };
+}
+
+const CHALLENGE_TITLE_RE =
+  /just a moment|checking your browser|attention required|verifying you are human|please wait/;
+
 export class Fetcher {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  private startPromise: Promise<void> | null = null;
   private lastRequestAt = 0;
-  private warmedUp = false;
+  private enqueue = createSerializer();
 
   private async launch(base: Record<string, unknown>, channel?: string): Promise<BrowserContext> {
     try {
@@ -48,20 +65,53 @@ export class Fetcher {
     }
   }
 
-  private async start() {
-    if (this.context) return;
+  private start(): Promise<void> {
+    if (!this.startPromise) {
+      this.startPromise = this.doStart().catch((err) => {
+        this.startPromise = null;
+        throw err;
+      });
+    }
+    return this.startPromise;
+  }
+
+  private headlessUa = new Map<string, string>();
+
+  private async headlessUserAgent(channel?: string): Promise<string> {
+    const key = channel ?? "bundled";
+    const cached = this.headlessUa.get(key);
+    if (cached) return cached;
+    let major = FALLBACK_CHROME_MAJOR;
+    try {
+      const probe = await chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
+      const m = probe.version().match(/^(\d+)\./);
+      await probe.close();
+      if (m) major = Number(m[1]);
+    } catch (err) {
+      console.error(
+        `[fetcher] browser version probe failed (${err instanceof Error ? err.message : err}), assuming Chrome/${major}`,
+      );
+    }
+    const ua = chromeUserAgent(major);
+    this.headlessUa.set(key, ua);
+    return ua;
+  }
+
+  private async doStart() {
     fs.mkdirSync(config.profileDir, { recursive: true });
     const base = {
       headless: config.headless,
       locale: "en-US",
       viewport: { width: 1440, height: 900 },
-      userAgent: CHRONO24_USER_AGENT,
       args: ["--disable-blink-features=AutomationControlled"],
       ignoreDefaultArgs: ["--enable-automation"],
     };
+    // headless UAs say "HeadlessChrome" and must be overridden (version-matched
+    // via probe); headed browsers keep their native UA - the best fingerprint
     if (config.chromeChannel) {
       try {
-        this.context = await this.launch(base, "chrome");
+        const opts = config.headless ? { ...base, userAgent: await this.headlessUserAgent("chrome") } : base;
+        this.context = await this.launch(opts, "chrome");
         console.error("[fetcher] launched Google Chrome");
       } catch (err) {
         console.error(
@@ -71,7 +121,8 @@ export class Fetcher {
     }
     if (!this.context) {
       try {
-        this.context = await this.launch(base);
+        const opts = config.headless ? { ...base, userAgent: await this.headlessUserAgent() } : base;
+        this.context = await this.launch(opts);
       } catch (err) {
         throw new Error(
           `No browser available. Install Google Chrome, or run "npx playwright install chromium" for the bundled fallback (${err instanceof Error ? err.message : err})`,
@@ -79,15 +130,40 @@ export class Fetcher {
         );
       }
     }
+    this.context.on("close", () => {
+      console.error("[fetcher] browser context closed; will relaunch on next request");
+      this.context = null;
+      this.page = null;
+      this.startPromise = null;
+    });
+    if (config.blockAssets) {
+      await this.context.route("**/*", (route) => {
+        const type = route.request().resourceType();
+        const url = route.request().url();
+        const blockable = type === "image" || type === "media" || type === "font";
+        if (blockable && !url.includes("cloudflare") && !url.includes("/cdn-cgi/")) {
+          return route.abort();
+        }
+        return route.continue();
+      });
+    }
     await this.context.addInitScript(spoofWebdriver);
     const [first] = this.context.pages();
     this.page = first ?? (await this.context.newPage());
   }
 
+  private async activePage(): Promise<Page> {
+    if (!this.context) throw new Error("browser not started");
+    if (!this.page || this.page.isClosed()) {
+      this.page = await this.context.newPage();
+    }
+    return this.page;
+  }
+
   private async waitForSlot() {
     const since = Date.now() - this.lastRequestAt;
-    const delayMs = Math.max(0, config.requestDelayMs - since) + Math.random() * 500;
-    if (delayMs > 0) await sleep(delayMs);
+    const wait = config.requestDelayMs - since;
+    if (wait > 0) await sleep(wait + Math.random() * 500);
     this.lastRequestAt = Date.now();
   }
 
@@ -107,32 +183,29 @@ export class Fetcher {
     });
   }
 
-  private isChallenged(s: Snapshot) {
-    return (
-      s.hasChallengeSelector ||
-      /just a moment|checking your browser|attention required|verifying you are human|please wait/.test(
-        s.title,
-      ) ||
-      s.bodyBytes < 2000
-    );
-  }
-
-  private async settle(page: Page) {
+  private async settle(page: Page, status: number) {
+    const challengedStatus = status === 403 || status === 503;
     const deadline = Date.now() + config.challengeTimeoutMs;
+    // a small body alone (no selector/title/status signal) gets only a short grace
+    // period before we accept the page - some legitimate pages are just tiny
+    const softDeadline = Date.now() + 5000;
+    let last: Snapshot | null = null;
     while (Date.now() < deadline) {
-      const snapshot = await this.inspect(page);
-      if (!this.isChallenged(snapshot)) return;
+      last = await this.inspect(page);
+      const hardSignal = last.hasChallengeSelector || CHALLENGE_TITLE_RE.test(last.title);
+      const softSignal = last.bodyBytes < 2000;
+      if (!hardSignal && !softSignal) return;
+      if (!hardSignal && !challengedStatus && Date.now() >= softDeadline) return;
       await sleep(1000);
     }
-    const last = await this.inspect(page);
-    throw new Error(
-      `Cloudflare challenge did not clear within ${Math.round(config.challengeTimeoutMs / 1000)}s (title="${last.title}", bytes=${last.bodyBytes})`,
+    throw new ChallengeError(
+      `Cloudflare challenge did not clear within ${Math.round(config.challengeTimeoutMs / 1000)}s (title="${last?.title}", bytes=${last?.bodyBytes})`,
     );
   }
 
   private async navigate(url: string): Promise<FetchResult> {
     await this.waitForSlot();
-    const page = this.page!;
+    const page = await this.activePage();
     let response: Awaited<ReturnType<Page["goto"]>>;
     try {
       response = await page.goto(url, {
@@ -144,7 +217,7 @@ export class Fetcher {
       throw new Error(`Navigation failed for ${url}: ${msg}`, { cause: err });
     }
     const status = response?.status() ?? 0;
-    await this.settle(page);
+    await this.settle(page, status);
     const html = await page.content();
     if (config.debug) {
       console.error(`[fetch] ${status} ${url} -> ${page.url()} (${html.length} bytes)`);
@@ -153,33 +226,41 @@ export class Fetcher {
   }
 
   async fetch(url: string): Promise<FetchResult> {
-    await this.start();
-    if (!this.warmedUp) {
-      this.warmedUp = true;
+    return this.enqueue(async () => {
+      await this.start();
       try {
-        await this.navigate(config.baseUrl + "/");
+        return await this.navigate(url);
       } catch (err) {
-        console.error(`[fetcher] warmup skipped: ${err instanceof Error ? err.message : err}`);
+        if (!(err instanceof ChallengeError)) throw err;
+        console.error("[fetcher] challenge hit, warming up on homepage and retrying once");
+        await this.navigate(config.baseUrl + "/");
+        return this.navigate(url);
       }
-    }
-    return this.navigate(url);
+    });
   }
 
   async fetchJson(url: string): Promise<{ status: number; body: string }> {
-    await this.start();
-    const host = new URL(config.baseUrl).host;
-    if (!this.page!.url().includes(host)) {
-      await this.navigate(config.baseUrl + "/");
-    }
-    await this.waitForSlot();
-    const result = await this.page!.evaluate(async (u) => {
-      const r = await fetch(u, { credentials: "include" });
-      return { status: r.status, body: await r.text() };
-    }, url);
-    if (config.debug) {
-      console.error(`[fetchJson] ${result.status} ${url} (${result.body.length} bytes)`);
-    }
-    return result;
+    return this.enqueue(async () => {
+      await this.start();
+      const host = new URL(config.baseUrl).host;
+      const page = await this.activePage();
+      if (page.url().includes(host)) {
+        await this.waitForSlot();
+      } else {
+        // navigate() already pays the politeness delay for this slot
+        await this.navigate(config.baseUrl + "/");
+      }
+      const result = await (
+        await this.activePage()
+      ).evaluate(async (u) => {
+        const r = await fetch(u, { credentials: "include" });
+        return { status: r.status, body: await r.text() };
+      }, url);
+      if (config.debug) {
+        console.error(`[fetchJson] ${result.status} ${url} (${result.body.length} bytes)`);
+      }
+      return result;
+    });
   }
 
   async close() {
@@ -187,6 +268,7 @@ export class Fetcher {
       await this.context.close().catch(() => {});
       this.context = null;
       this.page = null;
+      this.startPromise = null;
     }
   }
 }

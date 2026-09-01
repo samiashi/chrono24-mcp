@@ -16,19 +16,29 @@ try {
   const tools = await client.listTools();
   console.error(`smoke: tools = ${tools.tools.map((t) => t.name).join(", ")}`);
 
-  const res = await client.callTool({
-    name: "search_listings",
-    arguments: { query: process.env.SMOKE_QUERY ?? "Rolex Submariner" },
-  });
+  // cold profiles may need a full Cloudflare challenge cycle (well over the 60s default)
+  const CALL_OPTS = { timeout: 240_000 };
+  const res = await client.callTool(
+    {
+      name: "search_listings",
+      arguments: { query: process.env.SMOKE_QUERY ?? "Rolex Submariner" },
+    },
+    undefined,
+    CALL_OPTS,
+  );
   const payload = JSON.parse(res.content[0].text);
   if (res.isError) throw new Error(`search failed: ${payload}`);
   console.error(`smoke: search ok -> totalCount=${payload.totalCount} count=${payload.count}`);
   const firstId = payload.listings.find((l) => l.id)?.id;
   if (firstId) {
-    const detail = await client.callTool({
-      name: "get_watch",
-      arguments: { id: firstId },
-    });
+    const detail = await client.callTool(
+      {
+        name: "get_watch",
+        arguments: { id: firstId },
+      },
+      undefined,
+      CALL_OPTS,
+    );
     const d = JSON.parse(detail.content[0].text);
     if (detail.isError) throw new Error(`get_watch failed: ${d}`);
     console.error(

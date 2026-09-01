@@ -92,13 +92,20 @@ function asStringArray(v: unknown): unknown[] {
 }
 
 export function extractCustomerId(html: string): string | null {
-  const m = html.match(/customerId=(\d+)/);
+  // prefer the id inside a link so a stray mention elsewhere can't win
+  const m = html.match(/href="[^"]*customerId=(\d+)/) ?? html.match(/customerId=(\d+)/);
   return m?.[1] ?? null;
 }
 
 export function extractDealerId(html: string): string | null {
   const m = html.match(/data-dealer-id="(\d+)"/);
   return m?.[1] ?? null;
+}
+
+// A dead/removed listing redirects away or renders a page with neither the
+// JSON-LD Product nor a spec table - everything parses to empty strings.
+export function hasDetailContent(d: Omit<WatchDetail, "id" | "canonicalUrl">): boolean {
+  return Boolean(d.brand || d.model || d.reference || d.images.length > 0 || Object.keys(d.specs).length > 0);
 }
 
 export function parseDetail(html: string): Omit<WatchDetail, "id" | "canonicalUrl"> {
@@ -124,7 +131,9 @@ export function parseDetail(html: string): Omit<WatchDetail, "id" | "canonicalUr
 
   const offers = asStringArray(product?.["offers"]);
   const offerNode = offers[0] as JsonNode | undefined;
-  const offerPrice = typeof offerNode?.["price"] === "string" ? offerNode["price"] : undefined;
+  const priceRaw = offerNode?.["price"];
+  const offerPrice =
+    typeof priceRaw === "string" ? priceRaw : typeof priceRaw === "number" ? String(priceRaw) : undefined;
   const priceDisplay = offerPrice
     ? `${offerPrice} ${typeof offerNode?.["priceCurrency"] === "string" ? offerNode["priceCurrency"] : ""}`.trim()
     : "";

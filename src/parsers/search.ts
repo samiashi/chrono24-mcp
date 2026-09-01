@@ -18,6 +18,7 @@ export interface SearchOptions {
   certified?: boolean;
   customerId?: string;
   facets?: Record<string, string>;
+  currencyId?: string;
 }
 
 export const FACET_PARAM_ALLOWLIST = new Set([
@@ -99,29 +100,59 @@ export function buildSearchUrl(opts: SearchOptions): string {
   for (const [key, value] of Object.entries(opts.facets ?? {})) {
     if (FACET_PARAM_ALLOWLIST.has(key) && value) qs.set(key, value);
   }
-  qs.set("currencyId", config.currencyId);
+  qs.set("currencyId", opts.currencyId ?? config.currencyId);
   return `${config.baseUrl}/search/index.htm?${qs.toString()}`;
 }
 
 const PRICE_VALUE_RE = /[\d.,]+/;
+
+// Handles both separator conventions: "10,307.50" / "10.307,50" / "1.234.567".
+// A lone separator followed by exactly 3 digits is grouping (cards show no cents).
+export function parseLocalizedNumber(raw: string): number | null {
+  const cleaned = raw.replace(/[^\d.,]/g, "");
+  if (!/\d/.test(cleaned)) return null;
+  const lastDot = cleaned.lastIndexOf(".");
+  const lastComma = cleaned.lastIndexOf(",");
+  let decimalSep = "";
+  if (lastDot !== -1 && lastComma !== -1) {
+    decimalSep = lastDot > lastComma ? "." : ",";
+  } else if (lastDot !== -1 || lastComma !== -1) {
+    const sep = lastDot !== -1 ? "." : ",";
+    const idx = Math.max(lastDot, lastComma);
+    const digitsAfter = cleaned.length - idx - 1;
+    const occurrences = cleaned.split(sep).length - 1;
+    if (occurrences === 1 && digitsAfter >= 1 && digitsAfter <= 2) decimalSep = sep;
+  }
+  let normalized = "";
+  for (const ch of cleaned) {
+    if (ch >= "0" && ch <= "9") normalized += ch;
+    else if (ch === decimalSep) normalized += ".";
+  }
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+}
 
 function parsePrice(display: string): { priceDisplay: string | null; priceValue: number | null } {
   const trimmed = display.trim();
   if (!trimmed || /price on request/i.test(trimmed)) return { priceDisplay: null, priceValue: null };
   const match = trimmed.match(PRICE_VALUE_RE);
   if (!match) return { priceDisplay: trimmed, priceValue: null };
-  return { priceDisplay: trimmed, priceValue: Number(match[0].replace(/,/g, "")) };
+  return { priceDisplay: trimmed, priceValue: parseLocalizedNumber(match[0]) };
 }
 
 const COUNT_LABEL_RE = /^\s*([\d.,]+)\s+(results?|watches?|listings?)\b/i;
 
 function parseTotalCount($: CheerioAPI): number | null {
-  for (const el of $("span, strong, p").toArray()) {
+  // the count usually sits in a bare <strong>, so try those before the wider sweep
+  for (const el of [...$("strong").toArray(), ...$("span, p").toArray()]) {
     const $el = $(el);
     if ($el.children().length > 0) continue;
     const text = $el.text().trim();
     const m = text.match(COUNT_LABEL_RE);
-    if (m) return Number(m[1].replace(/[.,]/g, ""));
+    if (m) {
+      const n = parseLocalizedNumber(m[1]);
+      if (n !== null) return Math.round(n);
+    }
   }
   return null;
 }
