@@ -1,0 +1,7 @@
+# Captured Chrono24 pages in test/fixtures embed the site's own minified JS,
+# which CodeQL otherwise analyzes as if it were project code (false-positive
+# tainted-format-string alerts etc.). Fixtures are parsed as text by cheerio
+# in tests and never executed.
+name: chrono24-mcp CodeQL config
+paths-ignore:
+  - test/fixtures
