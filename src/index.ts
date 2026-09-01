@@ -136,14 +136,19 @@ type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
 // lets clients with resetTimeoutOnProgress survive long calls (batches,
 // rating summaries, challenged cold starts); silently a no-op when the
-// client did not request progress
-function reportProgress(extra: ToolExtra, progress: number, total: number | undefined, message: string) {
+// client did not request progress. Progress MUST increase monotonically per
+// token (item steps and challenge heartbeats interleave within one call), so
+// a per-request counter owns the progress value and counts live in messages.
+const progressCounters = new WeakMap<object, number>();
+function reportProgress(extra: ToolExtra, message: string) {
   const progressToken = extra._meta?.progressToken;
   if (progressToken === undefined) return;
+  const progress = (progressCounters.get(extra) ?? 0) + 1;
+  progressCounters.set(extra, progress);
   void extra
     .sendNotification({
       method: "notifications/progress",
-      params: { progressToken, progress, ...(total !== undefined ? { total } : {}), message },
+      params: { progressToken, progress, message },
     })
     .catch(() => {});
 }
@@ -152,8 +157,7 @@ function reportProgress(extra: ToolExtra, progress: number, total: number | unde
 // with resetTimeoutOnProgress alive through 45-135s clearance cycles
 function challengeHeartbeat(extra?: ToolExtra): ((message: string) => void) | undefined {
   if (!extra) return undefined;
-  let beats = 0;
-  return (message) => reportProgress(extra, ++beats, undefined, message);
+  return (message) => reportProgress(extra, message);
 }
 
 const fail = (message: string, hint?: string): ToolResult => ({
@@ -255,7 +259,7 @@ async function pagedSearch(opts: SearchOptions, page: number, extra?: ToolExtra)
   if (totalPages !== null && page > totalPages) {
     return { totalCount: first.totalCount, count: 0, page, listings: [], sourceUrl: first.sourceUrl };
   }
-  if (extra) reportProgress(extra, 1, 2, `resolved canonical page, fetching page ${page}`);
+  if (extra) reportProgress(extra, `resolved canonical page, fetching page ${page}`);
   const pageUrl = buildPagedUrl(first.sourceUrl, page1Url, page);
   return cachedParse(
     `search:${pageUrl}`,
@@ -308,8 +312,8 @@ async function spreadSample(
   const wanted = [...new Set([middle, totalPages])].filter((p) => p > 1 && p <= totalPages);
   const pages: Array<{ page: number; res: SearchResult }> = [{ page: 1, res: first }];
   const failedPages: number[] = [];
-  for (const [i, p] of wanted.entries()) {
-    if (extra) reportProgress(extra, i + 1, wanted.length + 1, `sampling price page ${p}/${totalPages}`);
+  for (const p of wanted) {
+    if (extra) reportProgress(extra, `sampling price page ${p}/${totalPages}`);
     try {
       pages.push({ page: p, res: await pagedSearch(opts, p) });
     } catch (err) {
@@ -497,7 +501,7 @@ server.registerTool(
         } catch (err) {
           results.push(emptyDetail(id, err instanceof Error ? err.message : String(err)));
         }
-        reportProgress(extra, i + 1, ids.length, `fetched listing ${id}`);
+        reportProgress(extra, `fetched listing ${id} (${i + 1}/${ids.length})`);
       }
       return ok({
         count: results.length,
@@ -880,7 +884,7 @@ server.registerTool(
     try {
       return ok(
         await computeDealerSummary(args.dealerId, (done) =>
-          reportProgress(extra, done, 5, `counted star bucket ${done}/5`),
+          reportProgress(extra, `counted star bucket ${done}/5`),
         ),
       );
     } catch (err) {
@@ -916,7 +920,7 @@ server.registerTool(
             error: err instanceof Error ? err.message : String(err),
           });
         }
-        reportProgress(extra, i + 1, ids.length, `vetted dealer ${dealerId}`);
+        reportProgress(extra, `vetted dealer ${dealerId} (${i + 1}/${ids.length})`);
       }
       return ok({
         count: summaries.length,
@@ -1060,7 +1064,7 @@ server.registerTool(
       };
       addAll(first);
       for (let p = 2; p <= limit; p++) {
-        reportProgress(extra, p, limit, `fetching page ${p}/${limit}`);
+        reportProgress(extra, `fetching page ${p}/${limit}`);
         const res = await pagedSearch(opts, p);
         if (res.count === 0) break;
         addAll(res);
@@ -1135,7 +1139,7 @@ server.registerTool(
             error: err instanceof Error ? err.message : String(err),
           });
         }
-        reportProgress(extra, i + 1, args.items.length, `appraised ${label}`);
+        reportProgress(extra, `appraised ${label} (${i + 1}/${args.items.length})`);
       }
       const priced = entries.filter((e) => e.stats);
       const sum = (pick: (s: { median: number; p25: number; p75: number }) => number) =>
@@ -1304,7 +1308,7 @@ server.registerTool(
             error: err instanceof Error ? err.message : String(err),
           });
         }
-        reportProgress(extra, i + 1, targets.length, `checked "${saved.name}"`);
+        reportProgress(extra, `checked "${saved.name}" (${i + 1}/${targets.length})`);
       }
       writeSavedSearches(all);
       return ok({
@@ -1464,12 +1468,7 @@ server.registerTool(
           `-${args.size}.$2`,
         );
         const res = await fetcher.fetchBinary(url);
-        reportProgress(
-          extra,
-          i + 1,
-          Math.min(args.maxPhotos, detail.images.length),
-          `fetched photo ${i + 1}`,
-        );
+        reportProgress(extra, `fetched photo ${i + 1}/${Math.min(args.maxPhotos, detail.images.length)}`);
         if (res.status !== 200 || !res.base64) continue;
         const mimeType = res.contentType.split(";")[0] || "image/jpeg";
         photos.push({ url, mimeType, bytes: Math.round((res.base64.length * 3) / 4) });
@@ -1645,7 +1644,7 @@ server.registerTool(
           if (gone) w.lastStatus = "gone";
         }
         w.lastCheckedAt = new Date().toISOString();
-        reportProgress(extra, i + 1, targets.length, `checked ${w.title}`);
+        reportProgress(extra, `checked ${w.title} (${i + 1}/${targets.length})`);
       }
       writeWatched(all);
       return ok({
@@ -1695,7 +1694,7 @@ server.registerTool(
         pass: Boolean(first),
         detail: first ? `id=${first.id} price=${first.priceValue}` : "no card with id and price",
       });
-      reportProgress(extra, 1, 2, "search parsed, fetching a detail page");
+      reportProgress(extra, "search parsed, fetching a detail page");
       if (first?.id) {
         const dres = await fetchOk(`${config.baseUrl}/watches/--id${first.id}.htm`, extra);
         const detail = parseDetail(dres.html);
