@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0](https://github.com/samiashi/chrono24-mcp/compare/v0.4.0...v0.5.0) (2026-09-01)
+
+
+### Features
+
+* deal finding, saved searches, spread stats, portfolio valuation, prompts ([486683f](https://github.com/samiashi/chrono24-mcp/commit/486683f831ae0c87ff34b777b2c6bd6f74f26538))
+* model buying guides, listing photos, watched listings, health check ([c7895f6](https://github.com/samiashi/chrono24-mcp/commit/c7895f6cd4532e40399af887043e281da3d5086d))
+* structured output, dealer rating summary, richer payloads and caching ([e4230a3](https://github.com/samiashi/chrono24-mcp/commit/e4230a3950cce713c3afbe06dc43bc4a012c0cb7))
+
+
+### Bug Fixes
+
+* model-name chip labels, accessory listings, out-of-range paging, brand lookup ([beab394](https://github.com/samiashi/chrono24-mcp/commit/beab394fad4de28eba1e0e9be7ee9aa799ea462b))
+* pagination, referenceNumber filter, and audit follow-ups ([53673bd](https://github.com/samiashi/chrono24-mcp/commit/53673bdd07067214c1117897d7d997d137a3b6a5))
+* request serialization, browser lifecycle, UA fingerprint and parsing correctness ([6e61d42](https://github.com/samiashi/chrono24-mcp/commit/6e61d4265630d1e6a9a4c84bd428773ececa881b))
+
+
+### Performance Improvements
+
+* progress notifications, disk-cached UA and models, compact payloads ([e72fadc](https://github.com/samiashi/chrono24-mcp/commit/e72fadc6a6ee854d11361eaa911b5509b7ac9297))
+
 ## [0.4.0](https://github.com/samiashi/chrono24-mcp/compare/v0.3.0...v0.4.0) (2026-08-25)
 
 
