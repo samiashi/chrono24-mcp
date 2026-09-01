@@ -166,6 +166,12 @@ async function pagedSearch(opts: SearchOptions, page: number): Promise<SearchRes
     parseSearchResults(res.html, res.finalUrl, 1),
   );
   if (page <= 1) return first;
+  // don't hit upstream for pages that cannot exist - out-of-range showpage
+  // requests look bot-like and have triggered Cloudflare challenges
+  const { totalPages } = pageMeta(first);
+  if (totalPages !== null && page > totalPages) {
+    return { totalCount: first.totalCount, count: 0, page, listings: [], sourceUrl: first.sourceUrl };
+  }
   const pageUrl = buildPagedUrl(first.sourceUrl, page1Url, page);
   return cachedParse(`search:${pageUrl}`, config.searchCacheTtlS, pageUrl, (res) =>
     parseSearchResults(res.html, res.finalUrl, page),
@@ -222,13 +228,20 @@ server.registerTool(
         args.page ?? 1,
       );
       const listings = args.limit ? parsed.listings.slice(0, args.limit) : parsed.listings;
+      const meta = pageMeta(parsed);
+      const notes: string[] = [];
+      if (ignored.length) notes.push(IGNORED_FACETS_NOTE(ignored));
+      if (meta.totalPages !== null && parsed.page > meta.totalPages) {
+        notes.push(`Page ${parsed.page} is beyond the last page (${meta.totalPages}); empty page returned.`);
+      }
       return ok({
         ...parsed,
-        ...pageMeta(parsed),
+        ...meta,
         currency: config.currencyId,
         listings,
         count: listings.length,
-        ...(ignored.length ? { ignoredFacets: ignored, note: IGNORED_FACETS_NOTE(ignored) } : {}),
+        ...(ignored.length ? { ignoredFacets: ignored } : {}),
+        ...(notes.length ? { note: notes.join(" ") } : {}),
       });
     } catch (err) {
       return failFrom(err);
@@ -595,11 +608,15 @@ server.registerTool(
         },
         args.page ?? 1,
       );
+      const meta = pageMeta(parsed);
       return ok({
         customerId: args.customerId,
         ...parsed,
-        ...pageMeta(parsed),
+        ...meta,
         currency: config.currencyId,
+        ...(meta.totalPages !== null && parsed.page > meta.totalPages
+          ? { note: `Page ${parsed.page} is beyond the last page (${meta.totalPages}); empty page returned.` }
+          : {}),
       });
     } catch (err) {
       return failFrom(err);

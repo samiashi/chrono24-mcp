@@ -184,6 +184,31 @@ describe("detail parser", () => {
     expect(hasDetailContent(empty)).toBe(false);
   });
 
+  it("falls back to spec-table rows when a page has no JSON-LD Product (accessories)", () => {
+    const html = `<html><body><table>
+      <tr><th>Brand</th><td>Rolex</td></tr>
+      <tr><th>Price</th><td>$225</td></tr>
+      <tr><th>Reference number</th><td>63600</td></tr>
+      <tr><th>Condition</th><td>Good</td></tr>
+    </table></body></html>`;
+    const d = parseDetail(html);
+    expect(d.brand).toBe("Rolex");
+    expect(d.priceDisplay).toBe("$225");
+    expect(d.priceValue).toBe(225);
+    expect(d.reference).toBe("63600");
+    expect(hasDetailContent(d)).toBe(true);
+  });
+
+  it("prefers the converted amount in dual-currency spec prices", () => {
+    const html = `<html><body><table>
+      <tr><th>Brand</th><td>Rolex</td></tr>
+      <tr><th>Price</th><td>€79 (= $94) [Negotiable]</td></tr>
+    </table></body></html>`;
+    const d = parseDetail(html);
+    expect(d.priceValue).toBe(94);
+    expect(d.priceDisplay).toContain("€79");
+  });
+
   it("accepts a numeric JSON-LD price", () => {
     const html = `<html><body><script type="application/ld+json">
       {"@type":"Product","brand":{"name":"Rolex"},"model":"Daytona","sku":"116500",
@@ -214,6 +239,13 @@ describe("taxonomy parsers", () => {
     expect(resolveBrand(brands, "nonexistentbrandxyz")).toBeNull();
   });
 
+  it("tolerates surrounding whitespace and missing diacritics", () => {
+    expect(resolveBrand(brands, " rolex ")?.id).toBe("221");
+    expect(resolveBrand(brands, " 221 ")?.name).toBe("Rolex");
+    expect(filterBrands(brands, "sohne").some((b) => b.name.includes("Söhne"))).toBe(true);
+    expect(resolveBrand(brands, "lange & sohne")?.name).toContain("Söhne");
+  });
+
   it("parses brand-scoped model links with cleaned names", () => {
     const models = parseModels(fixture("brand-rolex.html"), "rolex", "Rolex");
     expect(models.length).toBeGreaterThan(10);
@@ -229,6 +261,18 @@ describe("taxonomy parsers", () => {
       expect(model.slug).not.toContain("/");
     }
     expect(models.every((m) => !["116", "106"].includes(m.modelId))).toBe(true);
+  });
+
+  it("strips the 'Model:' filter-chip label and accepts absolute hrefs", () => {
+    const html = `
+      <a href="/rolex/submariner--mod1.htm">RolexModel: Submariner</a>
+      <a href="https://www.chrono24.com/rolex/daytona--mod2.htm">Rolex Daytona</a>
+      <a href="/rolex/gmt-master-ii--mod4.htm">Model: GMT-Master II</a>`;
+    const models = parseModels(html, "rolex", "Rolex");
+    const byId = new Map(models.map((m) => [m.modelId, m]));
+    expect(byId.get("1")?.name).toBe("Submariner");
+    expect(byId.get("2")?.name).toBe("Daytona");
+    expect(byId.get("4")?.name).toBe("GMT-Master II");
   });
 
   it("extracts brand slugs from urls", () => {

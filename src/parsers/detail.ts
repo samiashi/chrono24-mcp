@@ -1,4 +1,5 @@
 import { load, type CheerioAPI } from "cheerio";
+import { parseLocalizedNumber } from "./search.js";
 import { warnDrift } from "./taxonomy.js";
 
 export interface WatchDetail {
@@ -108,6 +109,15 @@ export function hasDetailContent(d: Omit<WatchDetail, "id" | "canonicalUrl">): b
   return Boolean(d.brand || d.model || d.reference || d.images.length > 0 || Object.keys(d.specs).length > 0);
 }
 
+// spec-table prices read like "€79 (= $94) [Negotiable]" - prefer the
+// session-currency conversion in parentheses, else the first number token,
+// and never concatenate digits across the two amounts
+function parseSpecPrice(raw: string): number | null {
+  const converted = raw.match(/\(=\s*[^\d]*([\d.,]+)/);
+  const token = converted?.[1] ?? raw.match(/[\d.,]+/)?.[0];
+  return token ? parseLocalizedNumber(token) : null;
+}
+
 export function parseDetail(html: string): Omit<WatchDetail, "id" | "canonicalUrl"> {
   const $ = load(html);
   const product = findProductNode(collectJsonLd($));
@@ -134,18 +144,25 @@ export function parseDetail(html: string): Omit<WatchDetail, "id" | "canonicalUr
   const priceRaw = offerNode?.["price"];
   const offerPrice =
     typeof priceRaw === "string" ? priceRaw : typeof priceRaw === "number" ? String(priceRaw) : undefined;
+  // accessory/parts listings have no JSON-LD Product at all - the spec table
+  // (brand, price, reference number rows) is the only structured source there
+  const specPrice = specs["price"];
   const priceDisplay = offerPrice
     ? `${offerPrice} ${typeof offerNode?.["priceCurrency"] === "string" ? offerNode["priceCurrency"] : ""}`.trim()
-    : "";
-  const priceValue = offerPrice ? Number(offerPrice.replace(/[^\d.]/g, "")) || null : null;
+    : (specPrice ?? "");
+  const priceValue = offerPrice
+    ? Number(offerPrice.replace(/[^\d.]/g, "")) || null
+    : specPrice
+      ? parseSpecPrice(specPrice)
+      : null;
 
   const brandNode = product?.["brand"];
   const brand = typeof brandNode === "string" ? brandNode : (brandNode as JsonNode | undefined)?.["name"];
 
   return {
-    brand: typeof brand === "string" ? brand : "",
-    model: typeof product?.["model"] === "string" ? product["model"] : "",
-    reference: typeof product?.["sku"] === "string" ? product["sku"] : "",
+    brand: (typeof brand === "string" ? brand : "") || get("brand"),
+    model: (typeof product?.["model"] === "string" ? product["model"] : "") || get("model"),
+    reference: (typeof product?.["sku"] === "string" ? product["sku"] : "") || get("reference number"),
     priceDisplay,
     priceValue,
     currency: typeof offerNode?.["priceCurrency"] === "string" ? offerNode["priceCurrency"] : "",

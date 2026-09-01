@@ -46,7 +46,13 @@ const NON_BRAND_SLUGS = new Set([
 ]);
 
 export function brandSlugFromUrl(url: string): string | null {
-  const m = url.match(/chrono24\.com\/([a-z0-9-]+)(?:\/[^/]*)?\.htm/i);
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return null;
+  }
+  const m = pathname.match(/^\/([a-z0-9-]+)(?:\/[^/]*)?\.htm/i);
   const slug = m?.[1] ?? null;
   return slug && !NON_BRAND_SLUGS.has(slug.toLowerCase()) ? slug : null;
 }
@@ -59,6 +65,9 @@ function cleanModelName(text: string, brandName: string, slug: string): string {
     .trim();
   const brandPrefix = new RegExp(`^${brandName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*`, "i");
   name = name.replace(brandPrefix, "").trim();
+  // filter-chip links label the model as "RolexModel: Submariner" - the
+  // "Model:" strip must run after the brand prefix strip
+  name = name.replace(/^Model:\s*/i, "").trim();
   if (!name) {
     name = slug
       .split("-")
@@ -73,7 +82,7 @@ export function parseModels(html: string, brandSlug: string, brandName: string):
   const models = new Map<string, BrandModel>();
   $("a[href*='--mod']").each((_, el) => {
     const href = $(el).attr("href") ?? "";
-    const m = href.match(new RegExp(`^/${brandSlug}/([a-z0-9-]+)--mod(\\d+)\\.htm`, "i"));
+    const m = href.match(new RegExp(`^(?:https?://[^/]+)?/${brandSlug}/([a-z0-9-]+)--mod(\\d+)\\.htm`, "i"));
     if (!m) return;
     const [, slug, modelId] = m;
     if (models.has(modelId)) return;
@@ -90,19 +99,23 @@ export function parseModels(html: string, brandSlug: string, brandName: string):
   return [...models.values()];
 }
 
+// trim + case-fold + strip diacritics so "sohne" matches "A. Lange & Söhne"
+const normalizeBrandText = (s: string) => s.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().trim();
+
 export function filterBrands(brands: Brand[], query: string): Brand[] {
-  const q = query.toLowerCase();
-  return brands.filter((b) => b.name.toLowerCase().includes(q));
+  const q = normalizeBrandText(query);
+  return brands.filter((b) => normalizeBrandText(b.name).includes(q));
 }
 
 export function resolveBrand(brands: Brand[], input: string): Brand | null {
-  if (/^\d+$/.test(input)) {
-    return brands.find((b) => b.id === input) ?? { id: input, name: input };
+  const trimmed = input.trim();
+  if (/^\d+$/.test(trimmed)) {
+    return brands.find((b) => b.id === trimmed) ?? { id: trimmed, name: trimmed };
   }
-  const lower = input.toLowerCase();
+  const q = normalizeBrandText(trimmed);
   return (
-    brands.find((b) => b.name.toLowerCase() === lower) ??
-    brands.find((b) => b.name.toLowerCase().includes(lower)) ??
+    brands.find((b) => normalizeBrandText(b.name) === q) ??
+    brands.find((b) => normalizeBrandText(b.name).includes(q)) ??
     null
   );
 }
