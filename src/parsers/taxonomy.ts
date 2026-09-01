@@ -100,7 +100,8 @@ export function parseModels(html: string, brandSlug: string, brandName: string):
 }
 
 // trim + case-fold + strip diacritics so "sohne" matches "A. Lange & Söhne"
-const normalizeBrandText = (s: string) => s.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().trim();
+export const normalizeText = (s: string) => s.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().trim();
+const normalizeBrandText = normalizeText;
 
 export function filterBrands(brands: Brand[], query: string): Brand[] {
   const q = normalizeBrandText(query);

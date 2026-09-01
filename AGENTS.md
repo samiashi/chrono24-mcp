@@ -33,13 +33,14 @@ Do NOT add live-network tests to CI: GitHub runners' IPs are blocked by Cloudfla
 ## Architecture
 
 ```
-src/index.ts           MCP server entry: registers 18 tools + 3 prompts via registerTool/registerPrompt (readOnlyHint annotations, output schemas + structuredContent), parsed-result caching, not-found detection, disk-persisted taxonomy, graceful shutdown (signals + stdin close)
+src/index.ts           MCP server entry: registers 24 tools + 3 prompts via registerTool/registerPrompt (readOnlyHint annotations, output schemas + structuredContent), parsed-result caching, not-found detection, disk-persisted taxonomy, graceful shutdown (signals + stdin close)
 src/fetcher.ts         Playwright-core fetcher: strict request serialization (createSerializer mutex - concurrent MCP tool calls share one page), persistent Chrome profile, memoized launch, crash recovery via context close listener, status-aware challenge sniffing, warmup-on-demand retry, politeness delay, stale SingletonLock recovery, in-page fetchJson for same-origin JSON APIs
 src/parsers/search.ts  Search URL builder + listing-card parser (current markup era), facet param allowlist, locale-aware price parsing (parseLocalizedNumber)
 src/parsers/detail.ts  Detail page parser: schema.org Product JSON-LD + spec table; hasDetailContent detects removed listings
 src/parsers/taxonomy.ts  Brand list (manufacturerIds select), model catalog (--mod links), facet selects, drift warnings
 src/parsers/ratings.ts Dealer ratings JSON normalizer (totals, filteredTotal, star filters)
-src/parsers/stats.ts   Price percentile stats
+src/parsers/stats.ts   Price percentile stats (computeStats) + rank-interpolated population estimates (estimateStats)
+src/parsers/guide.ts   Model-page editorial guide parser: h3 sections + per-reference price table (static SEO content)
 src/cache.ts           TTL + LRU cache (default 200 entries; search 180s, detail 1800s, taxonomy 86400s) - stores parsed payloads, never raw HTML
 src/diskStore.ts       Generic keyed JSON disk cache (taxonomy, per-brand models, probed UA - all inside the profile dir)
 src/config.ts          Env-var config (numeric envs validated via numFrom; garbage falls back to defaults)
@@ -69,7 +70,8 @@ test/fetcher.test.ts   Serializer (request mutex) behavior
 - No per-request currency: `currencyId` is dropped in the search redirect and Chrono24 pins currency to the browser session cookie, so a per-request override would silently return the session currency and could flip the session for later calls (verified live 2026-09). Currency stays env-level (`CURRENCY_ID`).
 - Price development / trend charts on detail pages are fully client-rendered - no static JSON to parse (probed 2026-09).
 - The shipping-country-selector ajax fragment (`/search/detail/shipping-country-selector.htm?ajax=1`) returns only the country picker UI - no shipping costs, even with `&country=XX` (probed 2026-09). Availability + ships-within come from the detail page itself instead.
-- Saved searches persist in `<profileDir>/chrono24-saved-searches.json` via diskStore; `check_saved_searches` diffs against per-search seenIds (capped at 600).
+- Saved searches persist in `<profileDir>/chrono24-saved-searches.json` via diskStore; `check_saved_searches` diffs against per-search seenIds (capped at 600). Watched listings persist the same way in `chrono24-watched-listings.json` (cap 20).
+- Model pages carry static SEO editorial (h3 sections + a per-reference price table); parsed by `parseModelGuide`. Listing photos are CORS-blocked for in-page fetch but fetchable via Playwright's `context.request` (Fetcher.fetchBinary, no politeness delay - equivalent to a page loading its own images); only `Large` (~28KB) and `ExtraLarge` (~75KB) size variants exist on the CDN.
 - `get_price_stats sample:'spread'` and `find_deals` interpolate population percentiles from first/middle/last price-sorted pages (`estimateStats`); the cheapest-60 sample stays the 1-request default.
 - A sold/removed listing serves a page without the JSON-LD Product / spec table (or redirects away from `--id<ID>.htm`); `hasDetailContent` + the finalUrl check turn that into a NotFoundError instead of an empty "success".
 - Search URLs redirect to canonical brand/model pages (`/search/index.htm?...` -> `/rolex/submariner--mod1.htm?...`); always parse whatever page lands.

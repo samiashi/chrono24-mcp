@@ -30,6 +30,7 @@ import {
 import {
   brandSlugFromUrl,
   filterBrands,
+  normalizeText,
   parseBrands,
   parseFacets,
   parseModels,
@@ -37,12 +38,25 @@ import {
   type Brand,
   type Facet,
 } from "./parsers/taxonomy.js";
+import { parseModelGuide } from "./parsers/guide.js";
 import { parseRatings } from "./parsers/ratings.js";
 import { computeStats, estimateStats, type RankedPrice } from "./parsers/stats.js";
 import { z } from "zod";
 import {
   checkSavedSearchesInput,
   checkSavedSearchesOutput,
+  checkWatchedListingsInput,
+  checkWatchedListingsOutput,
+  getModelGuideInput,
+  getModelGuideOutput,
+  getWatchPhotosInput,
+  getWatchPhotosOutput,
+  healthCheckInput,
+  healthCheckOutput,
+  unwatchListingInput,
+  unwatchListingOutput,
+  watchListingInput,
+  watchListingOutput,
   deleteSavedSearchInput,
   deleteSavedSearchOutput,
   findDealsInput,
@@ -500,6 +514,41 @@ server.registerTool(
   },
 );
 
+type ModelsPayload = {
+  brand: Brand & { slug: string };
+  slug: string;
+  models: ReturnType<typeof parseModels>;
+};
+
+// memory -> disk -> live fetch of a brand's model catalog; shared by
+// find_models and get_model_guide
+async function loadModels(brand: Brand): Promise<ModelsPayload | null> {
+  const cacheKey = `taxonomy:models:${brand.id}`;
+  const hit = cache.get<ModelsPayload>(cacheKey);
+  if (hit) return hit;
+  const disk = diskRead<ModelsPayload>(MODELS_DISK, brand.id, config.taxonomyCacheTtlS);
+  if (disk && Array.isArray(disk.value.models) && disk.value.models.length > 0 && disk.value.slug) {
+    cache.set(cacheKey, disk.value, disk.remainingS);
+    return disk.value;
+  }
+  const res = await fetchOk(
+    `${config.baseUrl}/search/index.htm?dosearch=true&manufacturerIds=${brand.id}&sortorder=5&pageSize=60&currencyId=${config.currencyId}`,
+  );
+  let slug = brandSlugFromUrl(res.finalUrl);
+  let html = res.html;
+  if (!slug || !html.includes("--mod")) {
+    const brandPage = await fetchOk(`${config.baseUrl}/${slug ?? "watches"}/index.htm`);
+    slug = slug ?? brandSlugFromUrl(brandPage.finalUrl);
+    html = brandPage.html.includes("--mod") ? brandPage.html : html;
+  }
+  if (!slug) return null;
+  const models = parseModels(html, slug, brand.name);
+  const payload = { brand: { ...brand, slug }, slug, models };
+  cache.set(cacheKey, payload, config.taxonomyCacheTtlS);
+  if (models.length > 0) diskWrite(MODELS_DISK, brand.id, payload, config.taxonomyCacheTtlS);
+  return payload;
+}
+
 server.registerTool(
   "find_models",
   {
@@ -521,38 +570,11 @@ server.registerTool(
           note: `No brand matching "${args.brand}". Call list_brands to see available names.`,
         });
       }
-      type ModelsPayload = {
-        brand: Brand & { slug: string };
-        slug: string;
-        models: ReturnType<typeof parseModels>;
-      };
-      const cacheKey = `taxonomy:models:${brand.id}`;
-      const hit = cache.get<ModelsPayload>(cacheKey);
-      if (hit) return ok({ ...hit, count: hit.models.length });
-      const disk = diskRead<ModelsPayload>(MODELS_DISK, brand.id, config.taxonomyCacheTtlS);
-      if (disk && Array.isArray(disk.value.models) && disk.value.models.length > 0 && disk.value.slug) {
-        cache.set(cacheKey, disk.value, disk.remainingS);
-        return ok({ ...disk.value, count: disk.value.models.length });
-      }
-
-      const res = await fetchOk(
-        `${config.baseUrl}/search/index.htm?dosearch=true&manufacturerIds=${brand.id}&sortorder=5&pageSize=60&currencyId=${config.currencyId}`,
-      );
-      let slug = brandSlugFromUrl(res.finalUrl);
-      let html = res.html;
-      if (!slug || !html.includes("--mod")) {
-        const brandPage = await fetchOk(`${config.baseUrl}/${slug ?? "watches"}/index.htm`);
-        slug = slug ?? brandSlugFromUrl(brandPage.finalUrl);
-        html = brandPage.html.includes("--mod") ? brandPage.html : html;
-      }
-      if (!slug) {
+      const payload = await loadModels(brand);
+      if (!payload) {
         return fail(`Could not resolve brand page for "${args.brand}"`);
       }
-      const models = parseModels(html, slug, brand.name);
-      const payload = { brand: { ...brand, slug }, slug, models };
-      cache.set(cacheKey, payload, config.taxonomyCacheTtlS);
-      if (models.length > 0) diskWrite(MODELS_DISK, brand.id, payload, config.taxonomyCacheTtlS);
-      return ok({ ...payload, count: models.length });
+      return ok({ ...payload, count: payload.models.length });
     } catch (err) {
       return failFrom(err);
     }
@@ -1194,6 +1216,353 @@ server.registerTool(
     } catch (err) {
       return failFrom(err);
     }
+  },
+);
+
+server.registerTool(
+  "get_model_guide",
+  {
+    title: "Get model buying guide",
+    description:
+      "Chrono24's editorial buying guide for a model: history, 'how much does it cost', investment notes and the per-reference approximate price table (e.g. Submariner 6538 'James Bond' ~148,000 USD). One polite request, cached 24h.",
+    inputSchema: getModelGuideInput,
+    outputSchema: getModelGuideOutput,
+    annotations: READ_ONLY,
+  },
+  async (args) => {
+    try {
+      const { brands } = await cachedBroadTaxonomy();
+      const brand = resolveBrand(brands, args.brand);
+      if (!brand) {
+        return fail(`No brand matching "${args.brand}"`, "Call list_brands to see available names.");
+      }
+      const payload = await loadModels(brand);
+      if (!payload) return fail(`Could not resolve brand page for "${args.brand}"`);
+      const wanted = normalizeText(args.model);
+      const model =
+        payload.models.find((m) => m.modelId === args.model.trim()) ??
+        payload.models.find((m) => m.slug === wanted) ??
+        payload.models.find((m) => normalizeText(m.name) === wanted) ??
+        payload.models.find((m) => normalizeText(m.name).includes(wanted));
+      if (!model) {
+        return fail(
+          `No model matching "${args.model}" for ${payload.brand.name}`,
+          `Call find_models(brand: "${payload.brand.name}") to see the catalog.`,
+        );
+      }
+      const url = `${config.baseUrl}/${payload.slug}/${model.slug}--mod${model.modelId}.htm`;
+      const guide = await cachedParse(
+        `guide:${payload.slug}:${model.modelId}`,
+        config.taxonomyCacheTtlS,
+        url,
+        (res) => parseModelGuide(res.html),
+      );
+      return ok({
+        brand: payload.brand,
+        model,
+        url,
+        sections: guide.sections,
+        referencePrices: guide.referencePrices,
+        ...(guide.referencePrices.length === 0
+          ? { note: "No reference price table on this model page; sections may still carry price guidance." }
+          : {
+              note: "referencePrices are Chrono24's editorial approximations - cross-check with get_price_stats for live market numbers.",
+            }),
+      });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+server.registerTool(
+  "get_watch_photos",
+  {
+    title: "Get listing photos",
+    description:
+      "Fetch a listing's photos as inline images so their condition and authenticity cues can be inspected visually. Large ~28KB each. Fast CDN fetches (no politeness delay needed).",
+    inputSchema: getWatchPhotosInput,
+    outputSchema: getWatchPhotosOutput,
+    annotations: READ_ONLY,
+  },
+  async (args, extra) => {
+    try {
+      const detail = await fetchWatch(args.id);
+      if (detail.images.length === 0) {
+        return ok({
+          id: args.id,
+          requested: args.maxPhotos,
+          returned: 0,
+          photos: [],
+          note: "Listing has no photos.",
+        });
+      }
+      const photos: Array<{ url: string; mimeType: string; bytes: number }> = [];
+      const imageBlocks: Array<{ type: "image"; data: string; mimeType: string }> = [];
+      for (const [i, original] of detail.images.slice(0, args.maxPhotos).entries()) {
+        const url = original.replace(
+          /-(ExtraLarge|Large|Medium|Small)\.(jpg|jpeg|png|webp)$/i,
+          `-${args.size}.$2`,
+        );
+        const res = await fetcher.fetchBinary(url);
+        reportProgress(
+          extra,
+          i + 1,
+          Math.min(args.maxPhotos, detail.images.length),
+          `fetched photo ${i + 1}`,
+        );
+        if (res.status !== 200 || !res.base64) continue;
+        const mimeType = res.contentType.split(";")[0] || "image/jpeg";
+        photos.push({ url, mimeType, bytes: Math.round((res.base64.length * 3) / 4) });
+        imageBlocks.push({ type: "image", data: res.base64, mimeType });
+      }
+      const meta = {
+        id: args.id,
+        requested: args.maxPhotos,
+        returned: photos.length,
+        photos,
+        ...(photos.length === 0
+          ? { note: "Photo fetches failed - the CDN may have rejected the session." }
+          : {}),
+      };
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(meta) }, ...imageBlocks],
+        structuredContent: meta as Record<string, unknown>,
+      };
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+// ---- watched listings (price-drop / sold tracking) ----
+
+const WATCHED_DISK = path.join(config.profileDir, "chrono24-watched-listings.json");
+const WATCHED_CAP = 20;
+
+interface WatchedListing {
+  id: string;
+  title: string;
+  note?: string;
+  addedAt: string;
+  lastCheckedAt: string;
+  lastPriceValue: number | null;
+  lastPriceDisplay: string;
+  lastStatus: "active" | "gone";
+}
+
+const readWatched = (): Record<string, WatchedListing> =>
+  diskRead<Record<string, WatchedListing>>(WATCHED_DISK, "all", FOREVER_S)?.value ?? {};
+const writeWatched = (all: Record<string, WatchedListing>) => diskWrite(WATCHED_DISK, "all", all, FOREVER_S);
+
+server.registerTool(
+  "watch_listing",
+  {
+    title: "Watch a listing",
+    description:
+      "Track a specific listing for price changes and sold/removed status; check_watched_listings reports what changed. Persists across restarts. One polite request to seed.",
+    inputSchema: watchListingInput,
+    outputSchema: watchListingOutput,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  async (args) => {
+    try {
+      const all = readWatched();
+      if (!(args.id in all) && Object.keys(all).length >= WATCHED_CAP) {
+        return fail(
+          `Watched-listing cap reached (${WATCHED_CAP})`,
+          "Remove one with unwatch_listing before adding another.",
+        );
+      }
+      const detail = await fetchWatch(args.id);
+      const now = new Date().toISOString();
+      const title = [detail.brand, detail.model].filter(Boolean).join(" ") || `listing ${args.id}`;
+      all[args.id] = {
+        id: args.id,
+        title,
+        ...(args.note ? { note: args.note } : {}),
+        addedAt: all[args.id]?.addedAt ?? now,
+        lastCheckedAt: now,
+        lastPriceValue: detail.priceValue,
+        lastPriceDisplay: detail.priceDisplay,
+        lastStatus: "active",
+      };
+      writeWatched(all);
+      return ok({
+        id: args.id,
+        title,
+        priceDisplay: detail.priceDisplay,
+        priceValue: detail.priceValue,
+        watchedCount: Object.keys(all).length,
+        note: "Run check_watched_listings later to see price changes or sold status.",
+      });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+server.registerTool(
+  "unwatch_listing",
+  {
+    title: "Unwatch a listing",
+    description: "Stop tracking a listing. No network requests.",
+    inputSchema: unwatchListingInput,
+    outputSchema: unwatchListingOutput,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  async (args) => {
+    try {
+      const all = readWatched();
+      const removed = args.id in all;
+      if (removed) {
+        delete all[args.id];
+        writeWatched(all);
+      }
+      return ok({ removed, id: args.id, watchedCount: Object.keys(all).length });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+server.registerTool(
+  "check_watched_listings",
+  {
+    title: "Check watched listings",
+    description:
+      "Re-check every watched listing and report price changes and sold/removed status. One polite request per listing not in the 30-min detail cache - ideal for a scheduled agent.",
+    inputSchema: checkWatchedListingsInput,
+    outputSchema: checkWatchedListingsOutput,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  async (_args, extra) => {
+    try {
+      const all = readWatched();
+      const targets = Object.values(all);
+      const results = [];
+      let changes = 0;
+      for (const [i, w] of targets.entries()) {
+        const previousPriceValue = w.lastPriceValue;
+        try {
+          const detail = await fetchWatch(w.id);
+          const priceChanged =
+            detail.priceValue !== previousPriceValue &&
+            !(detail.priceValue === null && previousPriceValue === null);
+          const changePct =
+            priceChanged && detail.priceValue !== null && previousPriceValue
+              ? Math.round(((detail.priceValue - previousPriceValue) / previousPriceValue) * 1000) / 10
+              : null;
+          if (priceChanged) changes++;
+          results.push({
+            id: w.id,
+            title: w.title,
+            status: "active" as const,
+            priceValue: detail.priceValue,
+            priceDisplay: detail.priceDisplay,
+            previousPriceValue,
+            priceChanged,
+            changePct,
+            ...(w.note ? { userNote: w.note } : {}),
+          });
+          w.lastPriceValue = detail.priceValue;
+          w.lastPriceDisplay = detail.priceDisplay;
+          w.lastStatus = "active";
+        } catch (err) {
+          const gone = err instanceof NotFoundError;
+          if (gone && w.lastStatus !== "gone") changes++;
+          results.push({
+            id: w.id,
+            title: w.title,
+            status: gone ? ("gone" as const) : ("error" as const),
+            priceValue: null,
+            priceDisplay: "",
+            previousPriceValue,
+            priceChanged: false,
+            changePct: null,
+            ...(w.note ? { userNote: w.note } : {}),
+            ...(gone ? {} : { error: err instanceof Error ? err.message : String(err) }),
+          });
+          if (gone) w.lastStatus = "gone";
+        }
+        w.lastCheckedAt = new Date().toISOString();
+        reportProgress(extra, i + 1, targets.length, `checked ${w.title}`);
+      }
+      writeWatched(all);
+      return ok({
+        checked: results.length,
+        changes,
+        results,
+        note: results.length
+          ? "status 'gone' means the listing was sold or removed. Prices reflect the 30-min detail cache."
+          : "No watched listings yet - add one with watch_listing.",
+      });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+server.registerTool(
+  "health_check",
+  {
+    title: "Health check",
+    description:
+      "Live canary: two polite requests (one search, one detail) asserting the parsing invariants that matter. Run after Chrono24 markup changes are suspected, or on a schedule.",
+    inputSchema: healthCheckInput,
+    outputSchema: healthCheckOutput,
+    annotations: READ_ONLY,
+  },
+  async (_args, extra) => {
+    const t0 = Date.now();
+    const checks: Array<{ name: string; pass: boolean; detail: string }> = [];
+    try {
+      const url = buildSearchUrl({ query: "Rolex Submariner", sortorder: resolveSort("newest") });
+      const res = await fetchOk(url);
+      const parsed = parseSearchResults(res.html, res.finalUrl, 1);
+      checks.push({
+        name: "search-cards",
+        pass: parsed.count === 60,
+        detail: `${parsed.count}/60 cards parsed`,
+      });
+      checks.push({
+        name: "search-total",
+        pass: parsed.totalCount !== null,
+        detail: `totalCount=${parsed.totalCount}`,
+      });
+      const first = parsed.listings.find((l) => l.id && l.priceValue !== null);
+      checks.push({
+        name: "search-card-fields",
+        pass: Boolean(first),
+        detail: first ? `id=${first.id} price=${first.priceValue}` : "no card with id and price",
+      });
+      reportProgress(extra, 1, 2, "search parsed, fetching a detail page");
+      if (first?.id) {
+        const dres = await fetchOk(`${config.baseUrl}/watches/--id${first.id}.htm`);
+        const detail = parseDetail(dres.html);
+        checks.push({
+          name: "detail-content",
+          pass: hasDetailContent(detail),
+          detail: `brand="${detail.brand}" images=${detail.images.length} specs=${Object.keys(detail.specs).length}`,
+        });
+        checks.push({
+          name: "detail-core-fields",
+          pass: Boolean(detail.brand && detail.priceValue),
+          detail: `price=${detail.priceValue} ref="${detail.reference}"`,
+        });
+      }
+    } catch (err) {
+      checks.push({ name: "fetch", pass: false, detail: err instanceof Error ? err.message : String(err) });
+    }
+    const allPass = checks.every((c) => c.pass);
+    return ok({
+      allPass,
+      durationMs: Date.now() - t0,
+      checks,
+      note: allPass
+        ? "All parsing invariants hold."
+        : "Failures usually mean Chrono24 changed markup - refresh fixtures (npm run capture-fixtures) and update selectors.",
+    });
   },
 );
 

@@ -18,6 +18,7 @@ import {
   parseModels,
   resolveBrand,
 } from "../src/parsers/taxonomy.js";
+import { parseModelGuide } from "../src/parsers/guide.js";
 import { parseRatings } from "../src/parsers/ratings.js";
 import { computeStats, estimateStats } from "../src/parsers/stats.js";
 
@@ -364,6 +365,37 @@ describe("spread-sampled stats estimation", () => {
 
   it("returns null with no samples", () => {
     expect(estimateStats([], 100)).toBeNull();
+  });
+});
+
+describe("model guide parser", () => {
+  const guide = parseModelGuide(fixture("model-rolex-submariner.html"));
+
+  it("extracts editorial sections and filters boilerplate", () => {
+    expect(guide.sections.length).toBeGreaterThanOrEqual(4);
+    const headings = guide.sections.map((s) => s.heading);
+    expect(headings.some((h) => /how much does/i.test(h))).toBe(true);
+    expect(headings.some((h) => /newsletter|payment methods|theme/i.test(h))).toBe(false);
+    for (const s of guide.sections) {
+      expect(s.text.length).toBeGreaterThan(0);
+      expect(s.text.length).toBeLessThanOrEqual(900);
+    }
+  });
+
+  it("extracts the per-reference price table", () => {
+    expect(guide.referencePrices.length).toBeGreaterThanOrEqual(10);
+    const bond = guide.referencePrices.find((r) => /james bond/i.test(r.features));
+    expect(bond).toBeDefined();
+    expect(bond!.priceValue).toBeGreaterThan(100000);
+    for (const r of guide.referencePrices) {
+      expect(r.priceValue).not.toBeNull();
+    }
+  });
+
+  it("returns empty structures for a page without guide content", () => {
+    const empty = parseModelGuide("<html><body><p>nothing here</p></body></html>");
+    expect(empty.sections).toEqual([]);
+    expect(empty.referencePrices).toEqual([]);
   });
 });
 

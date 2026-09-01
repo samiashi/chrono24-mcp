@@ -49,7 +49,15 @@ export class Fetcher {
   private page: Page | null = null;
   private startPromise: Promise<void> | null = null;
   private lastRequestAt = 0;
-  private enqueue = createSerializer();
+  private serialize = createSerializer();
+  private pendingCount = 0;
+
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    this.pendingCount++;
+    return this.serialize(fn).finally(() => {
+      this.pendingCount--;
+    });
+  }
 
   private async launch(base: Record<string, unknown>, channel?: string): Promise<BrowserContext> {
     try {
@@ -297,12 +305,36 @@ export class Fetcher {
 
   private launchedChannel: "chrome" | "chromium" | null = null;
 
-  status(): { running: boolean; channel: "chrome" | "chromium" | null; lastRequestAgoS: number | null } {
+  status(): {
+    running: boolean;
+    channel: "chrome" | "chromium" | null;
+    lastRequestAgoS: number | null;
+    queuedRequests: number;
+  } {
     return {
       running: this.context !== null,
       channel: this.context ? this.launchedChannel : null,
       lastRequestAgoS: this.lastRequestAt ? Math.round((Date.now() - this.lastRequestAt) / 1000) : null,
+      queuedRequests: this.pendingCount,
     };
+  }
+
+  // CDN asset fetch through the browser's cookie jar (Playwright request API
+  // is not subject to page CORS). No politeness delay: this is equivalent to
+  // a normal page view loading its own images, but still serialized so it
+  // never overlaps a page navigation.
+  async fetchBinary(url: string): Promise<{ status: number; contentType: string; base64: string }> {
+    return this.enqueue(async () => {
+      await this.start();
+      if (!this.context) throw new Error("browser not started");
+      const res = await this.context.request.get(url, { timeout: 20000, maxRedirects: 3 });
+      const status = res.status();
+      const contentType = res.headers()["content-type"] ?? "";
+      if (status !== 200) return { status, contentType, base64: "" };
+      const body = await res.body();
+      if (body.length > 2_000_000) return { status, contentType, base64: "" };
+      return { status, contentType, base64: body.toString("base64") };
+    });
   }
 
   private closing = false;

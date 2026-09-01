@@ -499,6 +499,7 @@ export const serverStatusOutput = {
     channel: z.enum(["chrome", "chromium"]).nullable(),
     headless: z.boolean(),
     lastRequestAgoS: z.number().nullable(),
+    queuedRequests: z.number(),
   }),
   cacheEntries: z.number(),
   taxonomyDiskFresh: z.boolean(),
@@ -506,4 +507,110 @@ export const serverStatusOutput = {
   requestDelayMs: z.number(),
   baseUrl: z.string(),
   currency: z.string(),
+};
+
+// ---- model guide ----
+
+export const getModelGuideInput = {
+  brand: z.string().describe("Brand name, id or slug, e.g. 'Rolex'"),
+  model: z.string().describe("Model name, slug or numeric model id, e.g. 'Submariner' or '1'"),
+};
+
+export const getModelGuideOutput = {
+  brand: z.object({ id: z.string(), name: z.string(), slug: z.string() }),
+  model: z.object({ modelId: z.string(), slug: z.string(), name: z.string() }),
+  url: z.string(),
+  sections: z
+    .array(z.object({ heading: z.string(), text: z.string() }))
+    .describe("Chrono24's editorial buying-guide sections (history, cost, investment, FAQs)"),
+  referencePrices: z
+    .array(
+      z.object({
+        model: z.string(),
+        price: z.string(),
+        priceValue: z.number().nullable(),
+        features: z.string(),
+      }),
+    )
+    .describe("Chrono24's own per-reference approximate price table (may be empty)"),
+  note: z.string().optional(),
+};
+
+// ---- listing photos ----
+
+export const getWatchPhotosInput = {
+  id: z.string().regex(/^\d+$/).describe("Chrono24 listing id"),
+  maxPhotos: z.number().int().min(1).max(4).optional().default(2).describe("Photos to return (1-4)"),
+  size: z
+    .enum(["Large", "ExtraLarge"])
+    .optional()
+    .default("Large")
+    .describe("Large ~28KB (fine for inspection), ExtraLarge ~75KB"),
+};
+
+export const getWatchPhotosOutput = {
+  id: z.string(),
+  requested: z.number(),
+  returned: z.number(),
+  photos: z.array(z.object({ url: z.string(), mimeType: z.string(), bytes: z.number() })),
+  note: z.string().optional(),
+};
+
+// ---- watched listings ----
+
+export const watchListingInput = {
+  id: z.string().regex(/^\d+$/).describe("Listing id to track for price changes and sold status"),
+  note: z.string().max(500).optional().describe("Optional reminder, e.g. 'buy if it drops below 9k'"),
+};
+
+export const watchListingOutput = {
+  id: z.string(),
+  title: z.string(),
+  priceDisplay: z.string(),
+  priceValue: z.number().nullable(),
+  watchedCount: z.number(),
+  note: z.string(),
+};
+
+export const unwatchListingInput = {
+  id: z.string().regex(/^\d+$/),
+};
+
+export const unwatchListingOutput = {
+  removed: z.boolean(),
+  id: z.string(),
+  watchedCount: z.number(),
+};
+
+export const checkWatchedListingsInput = {};
+
+export const checkWatchedListingsOutput = {
+  checked: z.number(),
+  changes: z.number().describe("How many listings changed price or disappeared since the last check"),
+  results: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      status: z.enum(["active", "gone", "error"]),
+      priceValue: z.number().nullable(),
+      priceDisplay: z.string(),
+      previousPriceValue: z.number().nullable(),
+      priceChanged: z.boolean(),
+      changePct: z.number().nullable().describe("Negative = price dropped"),
+      userNote: z.string().optional(),
+      error: z.string().optional(),
+    }),
+  ),
+  note: z.string(),
+};
+
+// ---- health check ----
+
+export const healthCheckInput = {};
+
+export const healthCheckOutput = {
+  allPass: z.boolean(),
+  durationMs: z.number(),
+  checks: z.array(z.object({ name: z.string(), pass: z.boolean(), detail: z.string() })),
+  note: z.string(),
 };
