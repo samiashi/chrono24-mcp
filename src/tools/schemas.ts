@@ -43,7 +43,7 @@ export const searchInput = {
     .record(z.string(), z.string())
     .optional()
     .describe(
-      'Extra facet filters as param->value pairs, e.g. {"caseMaterials": "4", "braceletMaterial": "407"}. Discover names/values via list_filters',
+      'Extra facet filters as param->value pairs, e.g. {"caseMaterials": "4", "braceletMaterial": "407"}. Common names: caseMaterials, braceletMaterial, dialColors, gender, movementTypes, watchCategories, maxAgeInDays - values via list_filters',
     ),
 };
 
@@ -87,7 +87,12 @@ export const getPriceStatsInput = {
   condition: z.enum(["new", "used"]).optional(),
   year: z.number().int().optional(),
   countries: z.array(z.string().length(2)).max(10).optional(),
-  facets: z.record(z.string(), z.string()).optional().describe("Facet filters, see list_filters"),
+  facets: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe(
+      "Facet filters (caseMaterials, braceletMaterial, dialColors, gender, movementTypes, watchCategories, maxAgeInDays) - values via list_filters",
+    ),
   sample: z
     .enum(["cheapest", "spread"])
     .optional()
@@ -332,12 +337,29 @@ const scopeFields = {
   condition: z.enum(["new", "used"]).optional(),
   year: z.number().int().optional(),
   countries: z.array(z.string().length(2)).max(10).optional(),
-  facets: z.record(z.string(), z.string()).optional().describe("Facet filters, see list_filters"),
+  facets: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe(
+      "Facet filters (caseMaterials, braceletMaterial, dialColors, gender, movementTypes, watchCategories, maxAgeInDays) - values via list_filters",
+    ),
 };
 
 export const findDealsInput = {
   ...scopeFields,
   maxResults: z.number().int().min(1).max(30).optional().default(10).describe("Max deals to return"),
+  sample: z
+    .enum(["spread", "cheapest"])
+    .optional()
+    .default("spread")
+    .describe("'spread' (accurate market stats, up to 3 requests) or 'cheapest' (fast triage, 1 request)"),
+  benchmark: z
+    .enum(["scope", "global"])
+    .optional()
+    .default("scope")
+    .describe(
+      "With a countries filter, 'global' prices the local listings against the WORLDWIDE market (adds 1-3 requests) - the right mode for 'is this local price actually good?'",
+    ),
 };
 
 const dealCard = listingCard.extend({
@@ -349,6 +371,14 @@ export const findDealsOutput = {
   totalCount: z.number().nullable(),
   currency: z.string(),
   coverage: z.enum(["full", "cheapest-60", "spread-sampled"]).nullable(),
+  benchmark: z
+    .enum(["scope", "global"])
+    .describe("Which market the stats describe; 'global' when local listings are ranked against the world"),
+  benchmarkTotalCount: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("Total listings in the global benchmark population (only when benchmark='global')"),
   stats: priceStatsObject.nullable(),
   deals: z.array(dealCard).describe("Listings priced at or below the market p25, cheapest first"),
   ignoredFacets,
@@ -507,6 +537,7 @@ export const serverStatusOutput = {
     binaryRequests: z.number(),
     challengeRetries: z.number(),
     avgPageMs: z.number().nullable(),
+    backoffActive: z.boolean(),
     cacheHits: z.number(),
     cacheMisses: z.number(),
   }),

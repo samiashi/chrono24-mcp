@@ -13,6 +13,7 @@ import {
   buildPagedUrl,
   buildSearchUrl,
   detectCurrency,
+  zeroResultHints,
   parseSearchResults,
   partitionFacets,
   resolveSort,
@@ -301,14 +302,21 @@ async function spreadSample(
   opts: SearchOptions,
   first: SearchResult,
   extra?: ToolExtra,
-): Promise<{ samples: RankedPrice[]; pagesSampled: number[] }> {
+): Promise<{ samples: RankedPrice[]; pagesSampled: number[]; failedPages: number[] }> {
   const totalPages = pageMeta(first).totalPages ?? 1;
   const middle = Math.max(2, Math.round((1 + totalPages) / 2));
   const wanted = [...new Set([middle, totalPages])].filter((p) => p > 1 && p <= totalPages);
   const pages: Array<{ page: number; res: SearchResult }> = [{ page: 1, res: first }];
+  const failedPages: number[] = [];
   for (const [i, p] of wanted.entries()) {
     if (extra) reportProgress(extra, i + 1, wanted.length + 1, `sampling price page ${p}/${totalPages}`);
-    pages.push({ page: p, res: await pagedSearch(opts, p) });
+    try {
+      pages.push({ page: p, res: await pagedSearch(opts, p) });
+    } catch (err) {
+      // degrade instead of failing the whole call - page 1 is already in hand
+      failedPages.push(p);
+      console.error(`[spread] page ${p} sample failed: ${err instanceof Error ? err.message : err}`);
+    }
   }
   const samples: RankedPrice[] = [];
   for (const { page, res } of pages) {
@@ -316,7 +324,7 @@ async function spreadSample(
       if (l.priceValue !== null) samples.push({ rank: (page - 1) * 60 + i + 1, price: l.priceValue });
     });
   }
-  return { samples, pagesSampled: pages.map((p) => p.page) };
+  return { samples, pagesSampled: pages.map((p) => p.page), failedPages };
 }
 
 function parseRatingsSafe(body: string): ReturnType<typeof parseRatings> | null {
@@ -372,6 +380,12 @@ server.registerTool(
       const listings = args.limit ? parsed.listings.slice(0, args.limit) : parsed.listings;
       const meta = pageMeta(parsed);
       const notes: string[] = [];
+      if (parsed.count === 0 && (args.page ?? 1) === 1) {
+        const hints = zeroResultHints(args.query);
+        notes.push(
+          `0 results. Free-text must match listing titles - attribute words (gender, material, condition) filter poorly.${hints.length ? ` Detected: ${hints.join("; ")}.` : ""} Keep the query to brand/model/reference and use facets or dedicated params for attributes.`,
+        );
+      }
       if (ignored.length) notes.push(IGNORED_FACETS_NOTE(ignored));
       if (meta.totalPages !== null && parsed.page > meta.totalPages) {
         notes.push(`Page ${parsed.page} is beyond the last page (${meta.totalPages}); empty page returned.`);
@@ -681,11 +695,22 @@ server.registerTool(
       let stats;
       let coverage: "full" | "cheapest-60" | "spread-sampled" | null;
       let pagesSampled: number[] | undefined;
+      let degradedNote = "";
       if (wantSpread) {
         const spread = await spreadSample(opts, parsed, extra);
-        stats = estimateStats(spread.samples, parsed.totalCount ?? spread.samples.length);
-        coverage = stats ? "spread-sampled" : null;
-        pagesSampled = spread.pagesSampled;
+        if (spread.pagesSampled.length <= 1) {
+          // sampling pages failed (e.g. Cloudflare) - fall back to cheapest-60
+          stats = computeStats(prices);
+          coverage = stats ? "cheapest-60" : null;
+          degradedNote = ` Full-range sampling failed for page(s) ${spread.failedPages.join(", ")} - falling back to cheapest-60 stats.`;
+        } else {
+          stats = estimateStats(spread.samples, parsed.totalCount ?? spread.samples.length);
+          coverage = stats ? "spread-sampled" : null;
+          pagesSampled = spread.pagesSampled;
+          if (spread.failedPages.length) {
+            degradedNote = ` Page(s) ${spread.failedPages.join(", ")} could not be sampled - the range estimate is partial.`;
+          }
+        }
       } else {
         stats = computeStats(prices);
         coverage = stats
@@ -716,6 +741,7 @@ server.registerTool(
                 ? `Percentiles interpolated from ${stats.sampleSize} listings sampled across pages ${pagesSampled?.join(", ")} of the price-sorted results.`
                 : `Stats computed from the ${stats.sampleSize} cheapest listings on page 1 (sorted price ascending); upper percentiles are lower-tail biased. Pass sample:'spread' for full-range estimates.`
             : "No priced listings found for this scope.",
+          ...(degradedNote ? [degradedNote.trim()] : []),
           ...(ignored.length ? [IGNORED_FACETS_NOTE(ignored)] : []),
         ].join(" "),
       });
@@ -916,32 +942,60 @@ server.registerTool(
   async (args, extra) => {
     try {
       const { applied, ignored } = partitionFacets(args.facets);
-      const opts = priceScopeOpts(args, applied);
-      const first = await pagedSearch(opts, 1);
-      const page1Prices = first.listings.map((l) => l.priceValue).filter((p): p is number => p !== null);
+      const scopedOpts = priceScopeOpts(args, applied);
+      const scoped = await pagedSearch(scopedOpts, 1);
+
+      // benchmark:"global" prices the scoped (e.g. UAE-only) listings against
+      // the worldwide market instead of the tiny local population
+      const useGlobal = args.benchmark === "global" && (args.countries?.length ?? 0) > 0;
+      const statsOpts = useGlobal ? priceScopeOpts({ ...args, countries: undefined }, applied) : scopedOpts;
+      const statsFirst = useGlobal ? await pagedSearch(statsOpts, 1) : scoped;
+
+      const page1Prices = statsFirst.listings.map((l) => l.priceValue).filter((p): p is number => p !== null);
       let stats;
       let coverage: "full" | "cheapest-60" | "spread-sampled" | null = null;
-      if (first.totalCount !== null && first.totalCount > page1Prices.length) {
-        const spread = await spreadSample(opts, first, extra);
-        stats = estimateStats(spread.samples, first.totalCount);
-        coverage = stats ? "spread-sampled" : null;
+      let degradedNote = "";
+      const wantSpread =
+        args.sample !== "cheapest" &&
+        statsFirst.totalCount !== null &&
+        statsFirst.totalCount > page1Prices.length;
+      if (wantSpread) {
+        const spread = await spreadSample(statsOpts, statsFirst, extra);
+        if (spread.pagesSampled.length <= 1) {
+          stats = computeStats(page1Prices);
+          coverage = stats ? "cheapest-60" : null;
+          degradedNote = ` Full-range sampling failed for page(s) ${spread.failedPages.join(", ")} - using cheapest-60 stats instead.`;
+        } else {
+          stats = estimateStats(spread.samples, statsFirst.totalCount ?? spread.samples.length);
+          coverage = stats ? "spread-sampled" : null;
+          if (spread.failedPages.length) {
+            degradedNote = ` Page(s) ${spread.failedPages.join(", ")} could not be sampled - the range estimate is partial.`;
+          }
+        }
       } else {
         stats = computeStats(page1Prices);
-        coverage = stats ? "full" : null;
+        coverage = stats
+          ? statsFirst.totalCount !== null && statsFirst.totalCount <= stats.sampleSize
+            ? "full"
+            : "cheapest-60"
+          : null;
       }
+      const benchmark = useGlobal ? ("global" as const) : ("scope" as const);
       if (!stats) {
+        const hints = zeroResultHints(args.query);
         return ok({
-          totalCount: first.totalCount,
-          currency: currencyOf(first),
+          totalCount: scoped.totalCount,
+          currency: currencyOf(scoped),
           coverage,
+          benchmark,
           stats: null,
           deals: [],
           ...(ignored.length ? { ignoredFacets: ignored } : {}),
-          sourceUrl: first.sourceUrl,
-          note: "No priced listings found for this scope.",
+          sourceUrl: scoped.sourceUrl,
+          note: `No priced listings found for this scope.${hints.length ? ` Free-text must match listing titles - attribute words filter poorly. Detected: ${hints.join("; ")}.` : ""}`,
         });
       }
-      const deals = first.listings
+      const deals = scoped.listings
         .filter((l) => l.priceValue !== null && l.priceValue <= stats.p25)
         .slice(0, args.maxResults)
         .map((l) => {
@@ -957,15 +1011,22 @@ server.registerTool(
               : {}),
           };
         });
+      const cheapestScoped = scoped.listings.find((l) => l.priceValue !== null);
+      const emptyDealsNote =
+        deals.length === 0 && cheapestScoped?.priceValue
+          ? ` Cheapest in scope is ${cheapestScoped.priceDisplay} (${Math.round((cheapestScoped.priceValue / stats.median - 1) * 100)}% vs the ${benchmark} median).`
+          : "";
       return ok({
-        totalCount: first.totalCount,
-        currency: currencyOf(first),
+        totalCount: scoped.totalCount,
+        currency: currencyOf(scoped),
         coverage,
+        benchmark,
+        ...(useGlobal ? { benchmarkTotalCount: statsFirst.totalCount } : {}),
         stats,
         deals,
         ...(ignored.length ? { ignoredFacets: ignored } : {}),
-        sourceUrl: first.sourceUrl,
-        note: `${deals.length} listing(s) at or below the market p25 (${stats.p25} ${config.currencyId}); median is ${stats.median}. Vet the seller (get_dealer_rating_summary) before recommending a purchase. Cross-border purchases may add import duty/VAT not included in listed prices.${ignored.length ? " " + IGNORED_FACETS_NOTE(ignored) : ""}`,
+        sourceUrl: scoped.sourceUrl,
+        note: `${deals.length} listing(s) at or below the ${benchmark} market p25 (${stats.p25}); median is ${stats.median}.${emptyDealsNote}${degradedNote} Vet the seller (get_dealer_rating_summary) before recommending a purchase. Cross-border purchases may add import duty/VAT not included in listed prices.${ignored.length ? " " + IGNORED_FACETS_NOTE(ignored) : ""}`,
       });
     } catch (err) {
       return failFrom(err);

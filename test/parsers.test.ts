@@ -4,6 +4,7 @@ import {
   buildPagedUrl,
   buildSearchUrl,
   detectCurrency,
+  zeroResultHints,
   parseLocalizedNumber,
   parseSearchResults,
   partitionFacets,
@@ -128,6 +129,24 @@ describe("facet partitioning", () => {
 
   it("handles missing facets", () => {
     expect(partitionFacets(undefined)).toEqual({ applied: {}, ignored: [] });
+  });
+});
+
+describe("zero-result query hints", () => {
+  it("maps attribute words to the params that actually filter", () => {
+    const hints = zeroResultHints("women gold watch");
+    expect(hints.some((h) => h.includes("gender"))).toBe(true);
+    expect(hints.some((h) => h.includes("caseMaterials"))).toBe(true);
+  });
+
+  it("maps condition words and stays quiet for clean model queries", () => {
+    expect(zeroResultHints("pre-owned Speedmaster").some((h) => h.includes("condition"))).toBe(true);
+    expect(zeroResultHints("Rolex Submariner 116610LN")).toEqual([]);
+    expect(zeroResultHints(undefined)).toEqual([]);
+  });
+
+  it("does not fire on brand names containing attribute substrings", () => {
+    expect(zeroResultHints("Golden Ellipse")).toEqual([]);
   });
 });
 

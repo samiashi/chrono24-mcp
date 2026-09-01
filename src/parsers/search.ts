@@ -153,6 +153,31 @@ const CURRENCY_HINTS: Array<[RegExp, string]> = [
   [/\$|\bUSD\b/, "USD"],
 ];
 
+// Attribute words in free-text queries match listing titles poorly (a
+// "women gold watch" query returns zero results even though both are
+// facets) - map them to the params/facets that actually filter.
+const QUERY_ATTRIBUTE_HINTS: Array<[RegExp, string]> = [
+  [/\b(women'?s?|woman|ladies'?|lady|female)\b/i, "use facets.gender (values via list_filters)"],
+  [/\b(men'?s?|man\b|male|gents?)\b/i, "use facets.gender (values via list_filters)"],
+  [
+    /\b(gold|steel|titanium|platinum|ceramic|bronze|carbon)\b/i,
+    "use facets.caseMaterials (values via list_filters)",
+  ],
+  [/\b(leather|rubber|nato)\b/i, "use facets.braceletMaterial (values via list_filters)"],
+  [/\b(unworn|brand.?new)\b/i, "use the condition param ('new')"],
+  [/\b(used|pre-?owned)\b/i, "use the condition param ('used')"],
+];
+
+export function zeroResultHints(query?: string): string[] {
+  if (!query) return [];
+  const hints: string[] = [];
+  for (const [re, hint] of QUERY_ATTRIBUTE_HINTS) {
+    const m = query.match(re);
+    if (m) hints.push(`"${m[0]}" - ${hint}`);
+  }
+  return hints;
+}
+
 export function detectCurrency(displays: Array<string | null | undefined>): string | null {
   for (const display of displays) {
     if (!display) continue;

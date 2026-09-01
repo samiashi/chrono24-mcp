@@ -188,9 +188,14 @@ export class Fetcher {
     return this.page;
   }
 
+  // after a Cloudflare challenge, run at double spacing for a while so a
+  // busy session cools down instead of re-poking at full cadence
+  private backoffUntil = 0;
+
   private async waitForSlot(delayMs = config.requestDelayMs) {
+    const effective = Date.now() < this.backoffUntil ? delayMs * 2 : delayMs;
     const since = Date.now() - this.lastRequestAt;
-    const wait = delayMs - since;
+    const wait = effective - since;
     if (wait > 0) await sleep(wait + Math.random() * 500);
     this.lastRequestAt = Date.now();
   }
@@ -276,6 +281,7 @@ export class Fetcher {
       } catch (err) {
         if (!(err instanceof ChallengeError)) throw err;
         this.telemetryData.challengeRetries++;
+        this.backoffUntil = Date.now() + 90_000;
         console.error("[fetcher] challenge hit, warming up on homepage and retrying once");
         onWait?.("Cloudflare challenge hit - warming up on the homepage and retrying");
         try {
@@ -334,6 +340,7 @@ export class Fetcher {
       binaryRequests: t.binaryRequests,
       challengeRetries: t.challengeRetries,
       avgPageMs: t.pageRequests ? Math.round(t.navMsTotal / t.pageRequests) : null,
+      backoffActive: Date.now() < this.backoffUntil,
     };
   }
 

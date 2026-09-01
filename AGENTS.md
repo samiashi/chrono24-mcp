@@ -33,7 +33,7 @@ Do NOT add live-network tests to CI: GitHub runners' IPs are blocked by Cloudfla
 ## Architecture
 
 ```
-src/index.ts           MCP server entry: registers 25 tools + 3 prompts via registerTool/registerPrompt (readOnlyHint annotations, output schemas + structuredContent), parsed-result caching, not-found detection, disk-persisted taxonomy, graceful shutdown (signals + stdin close)
+src/index.ts           MCP server entry: registers 25 tools + 3 prompts, zero-result query hints, spread-sampling degradation via registerTool/registerPrompt (readOnlyHint annotations, output schemas + structuredContent), parsed-result caching, not-found detection, disk-persisted taxonomy, graceful shutdown (signals + stdin close)
 src/fetcher.ts         Playwright-core fetcher: strict request serialization (createSerializer mutex - concurrent MCP tool calls share one page), persistent Chrome profile, memoized launch, crash recovery via context close listener, status-aware challenge sniffing, warmup-on-demand retry, politeness delay, stale SingletonLock recovery, in-page fetchJson for same-origin JSON APIs
 src/parsers/search.ts  Search URL builder + listing-card parser (current markup era), facet param allowlist, locale-aware price parsing (parseLocalizedNumber)
 src/parsers/detail.ts  Detail page parser: schema.org Product JSON-LD + spec table; hasDetailContent detects removed listings
@@ -62,7 +62,9 @@ test/fetcher.test.ts   Serializer (request mutex) behavior
 
 ## Domain knowledge (learned the hard way)
 
-- Search cards: `div.js-listing-item-container`; title lines `p.text-ellipsis`; price `p.wt-listing-item-price`; image attr is `img[data-lazy-sweet-spot-master-src]` with `_SIZE_` replaced by pixel width. Legacy fallback selector: `a.js-article-item` (old markup era).
+- Search cards: `div.js-listing-item-container`; title lines `p.text-ellipsis`; price `p.wt-listing-item-price`; image attr is `img[data-lazy-sweet-spot-master-src]` with `_SIZE_` replaced by pixel width. Legacy fallback selector: `a.js-article-item` (old markup era). Cards carry NO structured condition/year elements (probed 2026-09) - the second text line is the seller-written title; do not promise condition/year at card level.
+- Free-text queries only match listing titles: attribute words (women, gold, used...) return zero results even though they exist as facets/params. Zero-result responses emit `zeroResultHints` guidance mapping detected attribute words to the right facet/param.
+- After any ChallengeError the fetcher doubles politeness spacing for 90s (backoffUntil) so busy sessions cool down; spread sampling degrades to partial estimates or cheapest-60 instead of failing the whole call when a sample page hits a challenge.
 - Total result count: parse leaf text nodes matching `N listings/results`. NEVER read JSON-LD `AggregateOffer.offerCount` (counts only the ~60 embedded offers).
 - Detail pages: primary source is `<script type="application/ld+json">` Product node (`sku` = reference number, `offers` = price); supplement with the spec table. Neutral URL form `/watches/--id<ID>.htm` redirects to canonical.
 - Two distinct dealer ids exist: `dealerId` (`data-dealer-id`, powers ratings via `/api/merchant/ratings.json?dealerId=...`) vs `customerId` (URL param, powers inventory search filter). Never conflate - they are different numbers for the same dealer.
