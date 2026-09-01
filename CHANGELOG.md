@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/samiashi/chrono24-mcp/compare/v0.5.0...v0.6.0) (2026-09-01)
+
+
+### Features
+
+* field-test optimizations - bulk dealer vetting, telemetry, challenge heartbeat, truthful currency ([8755eb4](https://github.com/samiashi/chrono24-mcp/commit/8755eb4dd8943bb1bad2713a4aa06994af9185b9))
+* zero-result guidance, global deal benchmark, spread degradation, challenge backoff ([e0f03a0](https://github.com/samiashi/chrono24-mcp/commit/e0f03a057860afbba7854cda773ad14483ca32ca))
+
+
+### Bug Fixes
+
+* make progress notifications strictly monotonic per request ([df11c1c](https://github.com/samiashi/chrono24-mcp/commit/df11c1c3a28bfe35470ce2c4924089c93b6e462b))
+
 ## [0.5.0](https://github.com/samiashi/chrono24-mcp/compare/v0.4.0...v0.5.0) (2026-09-01)
 
 
