@@ -21,7 +21,7 @@ Chrono24 has no public API and sits behind a Cloudflare managed challenge that b
 
 ## Setup
 
-Requires Node >= 20 and Google Chrome (the fallback bundled Chromium needs a one-time `npx playwright install chromium`). First run may take ~15-30s to clear the Cloudflare challenge.
+Requires Node >= 22 and Google Chrome (the fallback bundled Chromium needs a one-time `npx playwright install chromium`). First run may take ~15-30s to clear the Cloudflare challenge.
 
 No repo clone needed - run straight from npm with `npx`.
 
@@ -107,14 +107,15 @@ npm install && npm run build && npm run smoke
 | `list_brands`     | List all 550+ Chrono24 watch brands with numeric ids (optional name filter). Feed ids into `search_listings`' `manufacturerIds` or names into `find_models`.                                                                                                                                                                           |
 | `find_models`     | A brand's model catalog: model name, slug and numeric model id (e.g. Rolex -> Submariner `mod1`, Daytona `mod2`). Pair with `search_listings`' `models` + `manufacturerIds` for precise searches.                                                                                                                                      |
 | `list_filters`    | All search facet filters with allowed values (case material, bracelet material, gender, watch category, country, listing age). Use with `search_listings`' `facets` param.                                                                                                                                                             |
-| `search_listings` | Search with query + filters (brand id, model id, reference, price range, condition, year, seller countries, facets), sort (`relevance`, `price_asc`, `price_desc`, `newest`, `popularity`), paging and an optional `limit` (1-60) for shortlisting. Returns cards with id, url, title, USD price, location, seller type, thumbnail. |
-| `get_price_stats` | Price statistics for a watch: min, p10/p25/median/p75/p90, max and sample size from the 60 cheapest matching listings. One request - the fast way to answer "what's a fair price for X?".                                                                                                                                             |
-| `get_watch`       | Full detail for one listing id: reference, condition, year, movement/caliber/power reserve, case material/diameter, scope of delivery, location, description, all photo URLs, canonical URL, seller ids.                                                                                                                               |
+| `search_listings` | Search with query + filters (brand id, model id, reference, price range, condition, year, seller countries, facets), sort (`relevance`, `price_asc`, `price_desc`, `newest`, `popularity`), paging (`page`, plus `totalPages`/`hasMore` in the response) and an optional `limit` (1-60) for shortlisting. Returns cards with id, url, title, price, location, seller type, thumbnail. |
+| `get_price_stats` | Price statistics for a watch: min, p10/p25/median/p75/p90, max and sample size from the 60 cheapest matching listings. One request - the fast way to answer "what's a fair price for X?". `coverage` says whether the sample was the full population (`full`) or the lower tail (`cheapest-60`).                                        |
+| `get_watch`       | Full detail for one listing id: reference, condition, year, movement/caliber/power reserve, case material/diameter, scope of delivery, location, description, all photo URLs, canonical URL, seller ids. Sold/removed listings return a clear not-found error instead of empty fields.                                                 |
 | `get_watches`     | Batch detail for up to 10 ids. Sequential and polite (~4s per uncached id); per-id failures don't break the batch.                                                                                                                                                                                                                     |
 | `get_dealer_listings` | A dealer's current inventory by `customerId` (from `get_watch`'s `sellerIds`). Same card shape as `search_listings`.                                                                                                                                                                                                              |
-| `get_dealer_ratings` | A dealer's customer reviews by `dealerId` (from `get_watch`'s `sellerIds` - a different id!). Per-review rating, text, dealer reply, paging totals.                                                                                                                                                                                |
+| `get_dealer_ratings` | A dealer's customer reviews by `dealerId` (from `get_watch`'s `sellerIds` - a different id!). Per-review rating, text, dealer reply, paging totals (`total`/`filteredTotal`); filter with `stars` (1-5).                                                                                                                              |
+| `get_dealer_rating_summary` | Star histogram + weighted average rating for a dealer (e.g. 4.83 from 10,128 reviews), reconstructed from per-star counts. 5 polite requests (~20s uncached, cached 30 min) - the fast way to vet a dealer.                                                                                                                    |
 
-All prices are normalized to USD (`currencyId=USD`). Empty result sets are valid outcomes, not errors.
+All tools are read-only and declare MCP `readOnlyHint`/`openWorldHint` annotations, and every result is also returned as `structuredContent` with a matching output schema. Prices are pinned to the configured `CURRENCY_ID` (default USD) and echoed in each result's `currency` field; Chrono24 tracks currency per browser session, so there is no per-request override. Empty result sets are valid outcomes, not errors.
 
 ## Environment variables
 
@@ -126,9 +127,13 @@ All prices are normalized to USD (`currencyId=USD`). Empty result sets are valid
 | `PROFILE_DIR`          | `~/.cache/chrono24-mcp/profile` | Browser profile holding the Cloudflare clearance cookie.                                     |
 | `SEARCH_CACHE_TTL_S`   | `180`                           | Search cache TTL.                                                                            |
 | `DETAIL_CACHE_TTL_S`   | `1800`                          | Detail cache TTL.                                                                            |
-| `TAXONOMY_CACHE_TTL_S` | `86400`                         | Brand/model taxonomy cache TTL.                                                              |
+| `TAXONOMY_CACHE_TTL_S` | `86400`                         | Brand/model taxonomy cache TTL (also persisted to disk next to the profile dir).            |
 | `MAX_BATCH`            | `10`                            | Cap for `get_watches`.                                                                       |
-| `CURRENCY_ID`          | `USD`                           | Price normalization currency.                                                                |
+| `CURRENCY_ID`          | `USD`                           | Price currency for all requests (session-wide).                                             |
+| `NAVIGATION_TIMEOUT_MS`| `45000`                         | Playwright navigation timeout per request.                                                  |
+| `CHALLENGE_TIMEOUT_MS` | `45000`                         | How long to wait for a Cloudflare challenge to clear.                                       |
+| `CHRONO24_BASE_URL`    | `https://www.chrono24.com`      | Upstream base URL.                                                                          |
+| `BLOCK_ASSETS`         | `false`                         | Skip downloading images/fonts/media for lower bandwidth (challenge resources always load).  |
 | `DEBUG`                | `false`                         | Verbose fetch logging to stderr.                                                             |
 
 ## Troubleshooting

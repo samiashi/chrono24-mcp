@@ -33,25 +33,30 @@ There are no unit tests yet. Do NOT add live-network tests to CI: GitHub runners
 ## Architecture
 
 ```
-src/index.ts           MCP server entry: registers 9 tools, instructions, graceful shutdown
-src/fetcher.ts         Playwright-core fetcher: persistent Chrome profile, challenge sniffing, politeness delay, stale SingletonLock recovery, in-page fetchJson for same-origin JSON APIs
-src/parsers/search.ts  Search URL builder + listing-card parser (current markup era), facet param allowlist
-src/parsers/detail.ts  Detail page parser: schema.org Product JSON-LD + spec table
+src/index.ts           MCP server entry: registers 10 tools via registerTool (readOnlyHint annotations, output schemas + structuredContent), parsed-result caching, not-found detection, disk-persisted taxonomy, graceful shutdown (signals + stdin close)
+src/fetcher.ts         Playwright-core fetcher: strict request serialization (createSerializer mutex - concurrent MCP tool calls share one page), persistent Chrome profile, memoized launch, crash recovery via context close listener, status-aware challenge sniffing, warmup-on-demand retry, politeness delay, stale SingletonLock recovery, in-page fetchJson for same-origin JSON APIs
+src/parsers/search.ts  Search URL builder + listing-card parser (current markup era), facet param allowlist, locale-aware price parsing (parseLocalizedNumber)
+src/parsers/detail.ts  Detail page parser: schema.org Product JSON-LD + spec table; hasDetailContent detects removed listings
 src/parsers/taxonomy.ts  Brand list (manufacturerIds select), model catalog (--mod links), facet selects, drift warnings
-src/parsers/ratings.ts Dealer ratings JSON normalizer
+src/parsers/ratings.ts Dealer ratings JSON normalizer (totals, filteredTotal, star filters)
 src/parsers/stats.ts   Price percentile stats
-src/cache.ts           TTL cache (search 180s, detail 1800s, taxonomy 86400s)
-src/config.ts          Env-var config
-src/tools/schemas.ts   Zod input schemas (single source of truth for tool inputs)
+src/cache.ts           TTL + LRU cache (default 200 entries; search 180s, detail 1800s, taxonomy 86400s) - stores parsed payloads, never raw HTML
+src/config.ts          Env-var config (numeric envs validated via numFrom; garbage falls back to defaults)
+src/tools/schemas.ts   Zod input AND output schemas (single source of truth for tool contracts)
 test/parsers.test.ts   Offline vitest suite over recorded fixtures - keep green, extend when parsers change
+test/cache.test.ts     TTL/LRU cache behavior
+test/fetcher.test.ts   Serializer (request mutex) behavior
 ```
 
 ## Hard rules
 
 - Never `console.log` / write to **stdout** anywhere in server code - stdout carries the MCP stdio protocol. Log to stderr only.
-- Keep requests serialized and slow (~3.5s spacing). Never add concurrency, lower delays, or batch parallel fetches - Cloudflare escalates and IP-blocks.
+- Keep requests serialized and slow (~3.5s spacing). Never add concurrency, lower delays, or batch parallel fetches - Cloudflare escalates and IP-blocks. The Fetcher enforces this with an internal promise-queue mutex (`createSerializer`); every new fetch path must go through `enqueue`.
 - Use `playwright-core` (not `playwright`) so installs never download browsers. Launch with `channel: "chrome"` against installed Google Chrome; bundled Chromium is fallback only.
+- User agent rules: headless launches MUST override the UA (headless browsers advertise "HeadlessChrome/<v>", which Cloudflare hard-blocks) using a version probed from the actual browser (`Fetcher.headlessUserAgent`) so the major stays truthful; headed launches keep the browser's native UA. Never reintroduce a hardcoded stale-version UA.
 - The browser profile dir (`~/.cache/chrono24-mcp/profile`) persists the Cloudflare clearance cookie across restarts - do not clear it programmatically or default it to a temp dir.
+- Cache parsed payloads, never raw HTML (memory), and never cache failures - `cachedParse` parsers throw (e.g. `NotFoundError`) to keep bad pages out of the cache.
+- Tool results must include `structuredContent` matching the tool's output schema in `src/tools/schemas.ts` (the SDK validates non-error results); `ok()` handles this - use it.
 
 ## Domain knowledge (learned the hard way)
 
@@ -59,7 +64,10 @@ test/parsers.test.ts   Offline vitest suite over recorded fixtures - keep green,
 - Total result count: parse leaf text nodes matching `N listings/results`. NEVER read JSON-LD `AggregateOffer.offerCount` (counts only the ~60 embedded offers).
 - Detail pages: primary source is `<script type="application/ld+json">` Product node (`sku` = reference number, `offers` = price); supplement with the spec table. Neutral URL form `/watches/--id<ID>.htm` redirects to canonical.
 - Two distinct dealer ids exist: `dealerId` (`data-dealer-id`, powers ratings via `/api/merchant/ratings.json?dealerId=...`) vs `customerId` (URL param, powers inventory search filter). Never conflate - they are different numbers for the same dealer.
-- Dealer ratings JSON is fetched in-page (`page.evaluate(fetch)` with credentials) so it inherits the Cloudflare-cleared cookies; shape: `{dealerRatingModels[], paging{total,offset}, ratingStarsFilter[]}`.
+- Dealer ratings JSON is fetched in-page (`page.evaluate(fetch)` with credentials) so it inherits the Cloudflare-cleared cookies; shape: `{dealerRatingModels[], paging{total,filteredTotal,offset}, ratingStarsFilter[]}`. `ratingStarsFilter` holds labels only (no counts); the endpoint accepts `stars=1..5`, but `sorting` only accepts `Relevance` - every other value (Newest/Date/etc.) returns HTTP 400 (probed live 2026-09). `get_dealer_rating_summary` reconstructs the exact star histogram from five per-star `filteredTotal` requests - there is no cheaper aggregate source (detail pages render dealer ratings client-side, and dealer profile pages expose no static aggregate).
+- No per-request currency: `currencyId` is dropped in the search redirect and Chrono24 pins currency to the browser session cookie, so a per-request override would silently return the session currency and could flip the session for later calls (verified live 2026-09). Currency stays env-level (`CURRENCY_ID`).
+- Price development / trend charts on detail pages are fully client-rendered - no static JSON to parse (probed 2026-09).
+- A sold/removed listing serves a page without the JSON-LD Product / spec table (or redirects away from `--id<ID>.htm`); `hasDetailContent` + the finalUrl check turn that into a NotFoundError instead of an empty "success".
 - Search URLs redirect to canonical brand/model pages (`/search/index.htm?...` -> `/rolex/submariner--mod1.htm?...`); always parse whatever page lands.
 - Prices are pinned to USD via `currencyId=USD`.
 - Full brand taxonomy lives in the broad search page (`/search/index.htm?dosearch=true` with no query) inside `select[name="manufacturerIds"]` - 554 options with numeric ids. Brand pages only reveal their own id via `man=<slug>&...&manufacturerIds=<id>` query strings.
