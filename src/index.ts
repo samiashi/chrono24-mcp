@@ -38,8 +38,25 @@ import {
   type Facet,
 } from "./parsers/taxonomy.js";
 import { parseRatings } from "./parsers/ratings.js";
-import { computeStats } from "./parsers/stats.js";
+import { computeStats, estimateStats, type RankedPrice } from "./parsers/stats.js";
+import { z } from "zod";
 import {
+  checkSavedSearchesInput,
+  checkSavedSearchesOutput,
+  deleteSavedSearchInput,
+  deleteSavedSearchOutput,
+  findDealsInput,
+  findDealsOutput,
+  listSavedSearchesInput,
+  listSavedSearchesOutput,
+  saveSearchInput,
+  saveSearchOutput,
+  searchAllInput,
+  searchAllOutput,
+  serverStatusInput,
+  serverStatusOutput,
+  valueCollectionInput,
+  valueCollectionOutput,
   findModelsInput,
   findModelsOutput,
   getDealerListingsInput,
@@ -199,6 +216,60 @@ async function pagedSearch(opts: SearchOptions, page: number, extra?: ToolExtra)
   );
 }
 
+type PriceScope = {
+  query?: string;
+  manufacturerIds?: string;
+  models?: string;
+  referenceNumber?: string;
+  priceFrom?: number;
+  priceTo?: number;
+  condition?: "new" | "used";
+  year?: number;
+  countries?: string[];
+  facets?: Record<string, string>;
+};
+
+function priceScopeOpts(scope: PriceScope, appliedFacets: Record<string, string>): SearchOptions {
+  return {
+    query: scope.query || undefined,
+    manufacturerIds: scope.manufacturerIds,
+    models: scope.models,
+    referenceNumber: scope.referenceNumber,
+    priceFrom: scope.priceFrom,
+    priceTo: scope.priceTo,
+    usedOrNew: scope.condition,
+    year: scope.year,
+    countryIds: scope.countries,
+    facets: appliedFacets,
+    sortorder: resolveSort("price_asc"),
+    pageSize: 60,
+  };
+}
+
+// Sample first + middle + last price-ascending pages so quantiles can be
+// interpolated across the full price range instead of the cheapest tail.
+async function spreadSample(
+  opts: SearchOptions,
+  first: SearchResult,
+  extra?: ToolExtra,
+): Promise<{ samples: RankedPrice[]; pagesSampled: number[] }> {
+  const totalPages = pageMeta(first).totalPages ?? 1;
+  const middle = Math.max(2, Math.round((1 + totalPages) / 2));
+  const wanted = [...new Set([middle, totalPages])].filter((p) => p > 1 && p <= totalPages);
+  const pages: Array<{ page: number; res: SearchResult }> = [{ page: 1, res: first }];
+  for (const [i, p] of wanted.entries()) {
+    if (extra) reportProgress(extra, i + 1, wanted.length + 1, `sampling price page ${p}/${totalPages}`);
+    pages.push({ page: p, res: await pagedSearch(opts, p) });
+  }
+  const samples: RankedPrice[] = [];
+  for (const { page, res } of pages) {
+    res.listings.forEach((l, i) => {
+      if (l.priceValue !== null) samples.push({ rank: (page - 1) * 60 + i + 1, price: l.priceValue });
+    });
+  }
+  return { samples, pagesSampled: pages.map((p) => p.page) };
+}
+
 function parseRatingsSafe(body: string): ReturnType<typeof parseRatings> | null {
   try {
     return parseRatings(body);
@@ -335,6 +406,7 @@ const emptyDetail = (id: string, error: string): WatchDetail & { error: string }
   caseDiameter: "",
   gender: "",
   scope: "",
+  availability: "",
   description: "",
   location: "",
   images: [],
@@ -535,38 +607,35 @@ server.registerTool(
   {
     title: "Get price statistics",
     description:
-      "Price statistics for a watch across Chrono24: min, percentiles (p10/p25/median/p75/p90), max and sample size, computed from the 60 cheapest matching listings sorted ascending. One polite request.",
+      "Price statistics for a watch across Chrono24: min, percentiles (p10/p25/median/p75/p90), max and sample size. Default 'cheapest' mode is one polite request (lower-tail biased when >60 match); sample:'spread' adds up to 2 requests and interpolates percentiles across the full price range.",
     inputSchema: getPriceStatsInput,
     outputSchema: getPriceStatsOutput,
     annotations: READ_ONLY,
   },
-  async (args) => {
+  async (args, extra) => {
     try {
       const { applied, ignored } = partitionFacets(args.facets);
-      const parsed = await pagedSearch(
-        {
-          query: args.query,
-          manufacturerIds: args.manufacturerIds,
-          models: args.models,
-          referenceNumber: args.referenceNumber,
-          priceFrom: args.priceFrom,
-          priceTo: args.priceTo,
-          usedOrNew: args.condition,
-          year: args.year,
-          countryIds: args.countries,
-          facets: applied,
-          sortorder: resolveSort("price_asc"),
-          pageSize: 60,
-        },
-        1,
-      );
+      const opts = priceScopeOpts(args, applied);
+      const parsed = await pagedSearch(opts, 1);
       const prices = parsed.listings.map((l) => l.priceValue).filter((p): p is number => p !== null);
-      const stats = computeStats(prices);
-      const coverage = stats
-        ? parsed.totalCount !== null && parsed.totalCount <= stats.sampleSize
-          ? ("full" as const)
-          : ("cheapest-60" as const)
-        : null;
+      const wantSpread =
+        args.sample === "spread" && parsed.totalCount !== null && parsed.totalCount > prices.length;
+      let stats;
+      let coverage: "full" | "cheapest-60" | "spread-sampled" | null;
+      let pagesSampled: number[] | undefined;
+      if (wantSpread) {
+        const spread = await spreadSample(opts, parsed, extra);
+        stats = estimateStats(spread.samples, parsed.totalCount ?? spread.samples.length);
+        coverage = stats ? "spread-sampled" : null;
+        pagesSampled = spread.pagesSampled;
+      } else {
+        stats = computeStats(prices);
+        coverage = stats
+          ? parsed.totalCount !== null && parsed.totalCount <= stats.sampleSize
+            ? "full"
+            : "cheapest-60"
+          : null;
+      }
       return ok({
         scope: {
           query: args.query ?? null,
@@ -577,6 +646,7 @@ server.registerTool(
         sourceUrl: parsed.sourceUrl,
         currency: config.currencyId,
         coverage,
+        ...(pagesSampled ? { pagesSampled } : {}),
         stats,
         cheapest: parsed.listings.filter((l) => l.priceValue !== null).slice(0, 3),
         ...(ignored.length ? { ignoredFacets: ignored } : {}),
@@ -584,7 +654,9 @@ server.registerTool(
           stats
             ? coverage === "full"
               ? `Stats cover all ${stats.sampleSize} matching priced listings.`
-              : `Stats computed from the ${stats.sampleSize} cheapest listings on page 1 (sorted price ascending); upper percentiles are lower-tail biased.`
+              : coverage === "spread-sampled"
+                ? `Percentiles interpolated from ${stats.sampleSize} listings sampled across pages ${pagesSampled?.join(", ")} of the price-sorted results.`
+                : `Stats computed from the ${stats.sampleSize} cheapest listings on page 1 (sorted price ascending); upper percentiles are lower-tail biased. Pass sample:'spread' for full-range estimates.`
             : "No priced listings found for this scope.",
           ...(ignored.length ? [IGNORED_FACETS_NOTE(ignored)] : []),
         ].join(" "),
@@ -712,6 +784,501 @@ server.registerTool(
       return failFrom(err);
     }
   },
+);
+
+server.registerTool(
+  "find_deals",
+  {
+    title: "Find deals",
+    description:
+      "Find listings priced below market for a watch scope: computes full-range price stats (up to 3 polite requests), then returns the cheapest listings at or below the market p25 with their percentage below median. The one-call answer to 'find me a good deal on X'.",
+    inputSchema: findDealsInput,
+    outputSchema: findDealsOutput,
+    annotations: READ_ONLY,
+  },
+  async (args, extra) => {
+    try {
+      const { applied, ignored } = partitionFacets(args.facets);
+      const opts = priceScopeOpts(args, applied);
+      const first = await pagedSearch(opts, 1);
+      const page1Prices = first.listings.map((l) => l.priceValue).filter((p): p is number => p !== null);
+      let stats;
+      let coverage: "full" | "cheapest-60" | "spread-sampled" | null = null;
+      if (first.totalCount !== null && first.totalCount > page1Prices.length) {
+        const spread = await spreadSample(opts, first, extra);
+        stats = estimateStats(spread.samples, first.totalCount);
+        coverage = stats ? "spread-sampled" : null;
+      } else {
+        stats = computeStats(page1Prices);
+        coverage = stats ? "full" : null;
+      }
+      if (!stats) {
+        return ok({
+          totalCount: first.totalCount,
+          currency: config.currencyId,
+          coverage,
+          stats: null,
+          deals: [],
+          ...(ignored.length ? { ignoredFacets: ignored } : {}),
+          sourceUrl: first.sourceUrl,
+          note: "No priced listings found for this scope.",
+        });
+      }
+      const deals = first.listings
+        .filter((l) => l.priceValue !== null && l.priceValue <= stats.p25)
+        .slice(0, args.maxResults)
+        .map((l) => {
+          const pctBelowMedian = Math.round((1 - l.priceValue! / stats.median) * 100);
+          return {
+            ...l,
+            pctBelowMedian,
+            ...(pctBelowMedian >= 60
+              ? {
+                  caution:
+                    "Far below market - verify condition, authenticity and that it is a complete watch (not parts/accessories) before trusting this price.",
+                }
+              : {}),
+          };
+        });
+      return ok({
+        totalCount: first.totalCount,
+        currency: config.currencyId,
+        coverage,
+        stats,
+        deals,
+        ...(ignored.length ? { ignoredFacets: ignored } : {}),
+        sourceUrl: first.sourceUrl,
+        note: `${deals.length} listing(s) at or below the market p25 (${stats.p25} ${config.currencyId}); median is ${stats.median}. Vet the seller (get_dealer_rating_summary) before recommending a purchase.${ignored.length ? " " + IGNORED_FACETS_NOTE(ignored) : ""}`,
+      });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+server.registerTool(
+  "search_all",
+  {
+    title: "Search all pages",
+    description:
+      "Aggregate multiple result pages into one deduplicated list (60 listings per page, one polite ~4s request per uncached page, capped at 5 pages). Use for exhaustive scans; prefer search_listings for quick looks.",
+    inputSchema: searchAllInput,
+    outputSchema: searchAllOutput,
+    annotations: READ_ONLY,
+  },
+  async (args, extra) => {
+    try {
+      const { applied, ignored } = partitionFacets(args.facets);
+      const opts: SearchOptions = {
+        ...priceScopeOpts(args, applied),
+        sortorder: resolveSort(args.sort),
+      };
+      const first = await pagedSearch(opts, 1);
+      const totalPages = pageMeta(first).totalPages ?? 1;
+      const limit = Math.min(args.maxPages, totalPages);
+      const byId = new Map<string, (typeof first.listings)[number]>();
+      const addAll = (res: SearchResult) => {
+        for (const l of res.listings) byId.set(l.id ?? `anon-${byId.size}`, l);
+      };
+      addAll(first);
+      for (let p = 2; p <= limit; p++) {
+        reportProgress(extra, p, limit, `fetching page ${p}/${limit}`);
+        const res = await pagedSearch(opts, p);
+        if (res.count === 0) break;
+        addAll(res);
+      }
+      const listings = [...byId.values()];
+      return ok({
+        totalCount: first.totalCount,
+        pagesFetched: limit,
+        truncated: totalPages > limit,
+        count: listings.length,
+        currency: config.currencyId,
+        listings,
+        ...(ignored.length ? { ignoredFacets: ignored, note: IGNORED_FACETS_NOTE(ignored) } : {}),
+        sourceUrl: first.sourceUrl,
+      });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+server.registerTool(
+  "value_collection",
+  {
+    title: "Value a collection",
+    description:
+      "Appraise up to 10 watches in one call: per-item market price stats (one polite request each) plus portfolio totals (sum of medians/p25/p75). Give each item a reference number or query, optionally condition/year.",
+    inputSchema: valueCollectionInput,
+    outputSchema: valueCollectionOutput,
+    annotations: READ_ONLY,
+  },
+  async (args, extra) => {
+    try {
+      const entries = [];
+      for (const [i, item] of args.items.entries()) {
+        const label =
+          item.label ??
+          [item.query, item.referenceNumber].filter(Boolean).join(" ").trim() ??
+          `item ${i + 1}`;
+        if (!item.query && !item.referenceNumber && !item.models && !item.manufacturerIds) {
+          entries.push({
+            label,
+            totalCount: null,
+            coverage: null,
+            stats: null,
+            error: "no search scope given",
+          });
+          continue;
+        }
+        try {
+          const parsed = await pagedSearch(priceScopeOpts(item, {}), 1);
+          const prices = parsed.listings.map((l) => l.priceValue).filter((p): p is number => p !== null);
+          const stats = computeStats(prices);
+          entries.push({
+            label,
+            totalCount: parsed.totalCount,
+            coverage: stats
+              ? parsed.totalCount !== null && parsed.totalCount <= stats.sampleSize
+                ? ("full" as const)
+                : ("cheapest-60" as const)
+              : null,
+            stats,
+          });
+        } catch (err) {
+          entries.push({
+            label,
+            totalCount: null,
+            coverage: null,
+            stats: null,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        reportProgress(extra, i + 1, args.items.length, `appraised ${label}`);
+      }
+      const priced = entries.filter((e) => e.stats);
+      const sum = (pick: (s: { median: number; p25: number; p75: number }) => number) =>
+        priced.length ? priced.reduce((acc, e) => acc + pick(e.stats!), 0) : null;
+      return ok({
+        currency: config.currencyId,
+        items: entries,
+        totals: {
+          itemsPriced: priced.length,
+          sumOfMedians: sum((s) => s.median),
+          sumOfP25: sum((s) => s.p25),
+          sumOfP75: sum((s) => s.p75),
+        },
+        note: "Per-item stats use the cheapest-60 sample (lower-tail biased for common models); medians of rare references are more reliable than of plentiful ones.",
+      });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+// ---- saved searches (persisted across restarts) ----
+
+const SAVED_DISK = path.join(config.profileDir, "chrono24-saved-searches.json");
+const FOREVER_S = Number.MAX_SAFE_INTEGER / 1000;
+const SEEN_CAP = 600;
+
+interface SavedSearch {
+  name: string;
+  params: PriceScope;
+  note?: string;
+  createdAt: string;
+  lastCheckedAt: string;
+  seenIds: string[];
+}
+
+const readSavedSearches = (): Record<string, SavedSearch> =>
+  diskRead<Record<string, SavedSearch>>(SAVED_DISK, "all", FOREVER_S)?.value ?? {};
+const writeSavedSearches = (all: Record<string, SavedSearch>) => diskWrite(SAVED_DISK, "all", all, FOREVER_S);
+
+const savedSearchOpts = (params: PriceScope): SearchOptions => ({
+  ...priceScopeOpts(params, partitionFacets(params.facets).applied),
+  sortorder: resolveSort("newest"),
+});
+
+server.registerTool(
+  "save_search",
+  {
+    title: "Save a search",
+    description:
+      "Save a named search scope and seed it with the current listings, so check_saved_searches later reports only NEW listings. Persists across restarts. One polite request to seed.",
+    inputSchema: saveSearchInput,
+    outputSchema: saveSearchOutput,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  async (args) => {
+    try {
+      const parsed = await pagedSearch(savedSearchOpts(args), 1);
+      const all = readSavedSearches();
+      const replaced = args.name in all;
+      const now = new Date().toISOString();
+      const seenIds = parsed.listings.map((l) => l.id).filter((id): id is string => id !== null);
+      all[args.name] = {
+        name: args.name,
+        params: {
+          query: args.query,
+          manufacturerIds: args.manufacturerIds,
+          models: args.models,
+          referenceNumber: args.referenceNumber,
+          priceFrom: args.priceFrom,
+          priceTo: args.priceTo,
+          condition: args.condition,
+          year: args.year,
+          countries: args.countries,
+          facets: args.facets,
+        },
+        ...(args.note ? { note: args.note } : {}),
+        createdAt: replaced ? all[args.name].createdAt : now,
+        lastCheckedAt: now,
+        seenIds,
+      };
+      writeSavedSearches(all);
+      return ok({
+        name: args.name,
+        totalCount: parsed.totalCount,
+        seeded: seenIds.length,
+        replaced,
+        note: `Saved. Run check_saved_searches${args.name ? ` (name: "${args.name}")` : ""} later - only listings newer than this snapshot will be reported.`,
+      });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+server.registerTool(
+  "list_saved_searches",
+  {
+    title: "List saved searches",
+    description: "List all saved searches with their scopes and last-checked times. No network requests.",
+    inputSchema: listSavedSearchesInput,
+    outputSchema: listSavedSearchesOutput,
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async () => {
+    try {
+      const all = Object.values(readSavedSearches());
+      return ok({
+        count: all.length,
+        searches: all.map((s) => ({
+          name: s.name,
+          params: Object.fromEntries(Object.entries(s.params).filter(([, v]) => v !== undefined)),
+          ...(s.note ? { note: s.note } : {}),
+          createdAt: s.createdAt,
+          lastCheckedAt: s.lastCheckedAt,
+          seenCount: s.seenIds.length,
+        })),
+      });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+server.registerTool(
+  "check_saved_searches",
+  {
+    title: "Check saved searches",
+    description:
+      "Re-run saved searches and report only listings that appeared since the last check. One polite request per search - ideal for a scheduled agent. Pass name to check a single search.",
+    inputSchema: checkSavedSearchesInput,
+    outputSchema: checkSavedSearchesOutput,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  async (args, extra) => {
+    try {
+      const all = readSavedSearches();
+      const targets = args.name ? (all[args.name] ? [all[args.name]] : []) : Object.values(all);
+      if (args.name && targets.length === 0) {
+        return fail(`No saved search named "${args.name}"`, "Call list_saved_searches to see what exists.");
+      }
+      const results = [];
+      for (const [i, saved] of targets.entries()) {
+        const previousCheckAt = saved.lastCheckedAt;
+        try {
+          const parsed = await pagedSearch(savedSearchOpts(saved.params), 1);
+          const seen = new Set(saved.seenIds);
+          const fresh = parsed.listings.filter((l) => l.id !== null && !seen.has(l.id));
+          const currentIds = parsed.listings.map((l) => l.id).filter((id): id is string => id !== null);
+          saved.seenIds = [...new Set([...currentIds, ...saved.seenIds])].slice(0, SEEN_CAP);
+          saved.lastCheckedAt = new Date().toISOString();
+          results.push({
+            name: saved.name,
+            totalCount: parsed.totalCount,
+            newCount: fresh.length,
+            newListings: fresh.slice(0, 20),
+            previousCheckAt,
+          });
+        } catch (err) {
+          results.push({
+            name: saved.name,
+            totalCount: null,
+            newCount: 0,
+            newListings: [],
+            previousCheckAt,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        reportProgress(extra, i + 1, targets.length, `checked "${saved.name}"`);
+      }
+      writeSavedSearches(all);
+      return ok({
+        checked: results.length,
+        results,
+        note: results.length
+          ? "newListings contains only listings never seen by a previous check of that search."
+          : "No saved searches yet - create one with save_search.",
+      });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+server.registerTool(
+  "delete_saved_search",
+  {
+    title: "Delete a saved search",
+    description: "Remove a saved search by name. No network requests.",
+    inputSchema: deleteSavedSearchInput,
+    outputSchema: deleteSavedSearchOutput,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  },
+  async (args) => {
+    try {
+      const all = readSavedSearches();
+      const existed = args.name in all;
+      if (existed) {
+        delete all[args.name];
+        writeSavedSearches(all);
+      }
+      return ok({
+        deleted: existed,
+        name: args.name,
+        ...(existed ? {} : { note: "No saved search by that name existed." }),
+      });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+server.registerTool(
+  "server_status",
+  {
+    title: "Server status",
+    description:
+      "Diagnostics: browser state, cache and disk-cache freshness, politeness settings. No network requests - useful when calls feel slow or stuck.",
+    inputSchema: serverStatusInput,
+    outputSchema: serverStatusOutput,
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async () => {
+    try {
+      return ok({
+        version: VERSION,
+        uptimeS: Math.round(process.uptime()),
+        browser: { ...fetcher.status(), headless: config.headless },
+        cacheEntries: cache.size,
+        taxonomyDiskFresh: diskRead(TAXONOMY_DISK, "broad", config.taxonomyCacheTtlS) !== null,
+        savedSearches: Object.keys(readSavedSearches()).length,
+        requestDelayMs: config.requestDelayMs,
+        baseUrl: config.baseUrl,
+        currency: config.currencyId,
+      });
+    } catch (err) {
+      return failFrom(err);
+    }
+  },
+);
+
+// ---- prompts: guided multi-tool recipes ----
+
+server.registerPrompt(
+  "appraise_watch",
+  {
+    title: "Appraise a watch",
+    description: "Estimate fair market value for a watch (reference, model or description)",
+    argsSchema: { watch: z.string().describe("Reference number, model name or description") },
+  },
+  ({ watch }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `Appraise this watch on Chrono24: "${watch}".
+
+1. Resolve it: if it looks like a brand/model, use list_brands + find_models to get precise ids; if it is a reference number, use it directly.
+2. Call get_price_stats with sample:"spread" for full-range percentiles. If condition or year matter, run it twice (e.g. condition:"used" vs "new") and compare.
+3. Sanity-check with find_deals to see what the cheapest credible listings look like.
+4. Report: fair range (p25-p75), median, sample size and coverage caveats, and what drives the spread (condition, year, box/papers - spot-check 2-3 listings with get_watch if needed).`,
+        },
+      },
+    ],
+  }),
+);
+
+server.registerPrompt(
+  "vet_dealer",
+  {
+    title: "Vet a dealer",
+    description: "Assess whether a Chrono24 seller is trustworthy before buying",
+    argsSchema: {
+      listingId: z.string().describe("Listing id (digits from the URL) whose seller should be vetted"),
+    },
+  },
+  ({ listingId }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `Vet the seller of Chrono24 listing ${listingId}.
+
+1. get_watch(${listingId}) - note sellerIds (customerId and dealerId) and whether it is a dealer or private seller. Private sellers have no ratings; say so and stop after step 4.
+2. get_dealer_rating_summary with the dealerId - overall average and star histogram.
+3. get_dealer_ratings with stars:1, size:5 - read the worst reviews for red-flag patterns (non-delivery, authenticity disputes) vs. noise (shipping delays).
+4. get_dealer_listings with the customerId - a large, coherent inventory is a good sign.
+5. Verdict: trustworthy / caution / avoid, with the evidence.`,
+        },
+      },
+    ],
+  }),
+);
+
+server.registerPrompt(
+  "find_deal",
+  {
+    title: "Find the best deal",
+    description: "Find and vet the best-value listing for a watch, end to end",
+    argsSchema: {
+      watch: z.string().describe("What to hunt for, e.g. 'Omega Speedmaster Professional'"),
+      budget: z.string().optional().describe("Optional max budget, e.g. '5000'"),
+    },
+  },
+  ({ watch, budget }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `Find me the best deal on: "${watch}"${budget ? ` with a budget of ${budget}` : ""}.
+
+1. Resolve the model precisely (find_models) so the search is not polluted by other models.
+2. find_deals on that scope${budget ? ` with priceTo:${budget}` : ""} - it returns below-market listings with pctBelowMedian and caution flags.
+3. get_watches on the top 2-3 candidate ids - check condition, year, box/papers, and that nothing explains the low price.
+4. Vet the seller of the best candidate (get_dealer_rating_summary + worst reviews).
+5. Recommend one listing with the reasoning, or say why none qualify.`,
+        },
+      },
+    ],
+  }),
 );
 
 let closing = false;

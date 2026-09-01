@@ -128,6 +128,7 @@ export class Fetcher {
       try {
         const opts = config.headless ? { ...base, userAgent: await this.headlessUserAgent("chrome") } : base;
         this.context = await this.launch(opts, "chrome");
+        this.launchedChannel = "chrome";
         console.error("[fetcher] launched Google Chrome");
       } catch (err) {
         console.error(
@@ -139,6 +140,7 @@ export class Fetcher {
       try {
         const opts = config.headless ? { ...base, userAgent: await this.headlessUserAgent() } : base;
         this.context = await this.launch(opts);
+        this.launchedChannel = "chromium";
       } catch (err) {
         throw new Error(
           `No browser available. Install Google Chrome, or run "npx playwright install chromium" for the bundled fallback (${err instanceof Error ? err.message : err})`,
@@ -257,7 +259,13 @@ export class Fetcher {
       } catch (err) {
         if (!(err instanceof ChallengeError)) throw err;
         console.error("[fetcher] challenge hit, warming up on homepage and retrying once");
-        await this.navigate(config.baseUrl + "/");
+        try {
+          await this.navigate(config.baseUrl + "/");
+        } catch (homeErr) {
+          if (!(homeErr instanceof ChallengeError)) throw homeErr;
+          // clearance often lands moments after our polling window expires -
+          // the final target attempt below usually succeeds anyway
+        }
         return this.navigate(url);
       }
     });
@@ -285,6 +293,16 @@ export class Fetcher {
       }
       return result;
     });
+  }
+
+  private launchedChannel: "chrome" | "chromium" | null = null;
+
+  status(): { running: boolean; channel: "chrome" | "chromium" | null; lastRequestAgoS: number | null } {
+    return {
+      running: this.context !== null,
+      channel: this.context ? this.launchedChannel : null,
+      lastRequestAgoS: this.lastRequestAt ? Math.round((Date.now() - this.lastRequestAt) / 1000) : null,
+    };
   }
 
   private closing = false;

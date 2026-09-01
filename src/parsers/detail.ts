@@ -18,6 +18,8 @@ export interface WatchDetail {
   caseDiameter: string;
   gender: string;
   scope: string;
+  availability: string;
+  shipsWithin?: string;
   description: string;
   location: string;
   images: string[];
@@ -109,6 +111,21 @@ export function hasDetailContent(d: Omit<WatchDetail, "id" | "canonicalUrl">): b
   return Boolean(d.brand || d.model || d.reference || d.images.length > 0 || Object.keys(d.specs).length > 0);
 }
 
+// pages embed "The item is in stock and ready to ship within <strong>1 - 3
+// days</strong>" (often HTML-escaped inside embedded JSON) - pull the window
+// after the marker and strip tags/entities to recover the "1 - 3 days" part
+function extractShipsWithin(html: string): string | undefined {
+  const i = html.search(/ready to ship within/i);
+  if (i === -1) return undefined;
+  const window = html
+    .slice(i + "ready to ship within".length, i + 120)
+    .replace(/&lt;[^&]*?&gt;|<[^>]*>/g, " ")
+    .replace(/&[a-z#0-9]+;/gi, " ")
+    .replace(/\\+/g, " ");
+  const m = window.match(/([\d]+\s*[-–]?\s*\d*\s*(?:business\s+)?days?)/i);
+  return m ? m[1].replace(/\s+/g, " ").trim() : undefined;
+}
+
 // spec-table prices read like "€79 (= $94) [Negotiable]" - prefer the
 // session-currency conversion in parentheses, else the first number token,
 // and never concatenate digits across the two amounts
@@ -173,6 +190,8 @@ export function parseDetail(html: string): Omit<WatchDetail, "id" | "canonicalUr
     caseDiameter: get("case diameter"),
     gender: get("gender"),
     scope: get("scope of delivery"),
+    availability: get("availability"),
+    shipsWithin: extractShipsWithin(html),
     description: typeof product?.["description"] === "string" ? product["description"] : "",
     location: get("location"),
     images,

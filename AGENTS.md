@@ -28,12 +28,12 @@ Smoke overrides for testing a published package instead of the local build:
 SMOKE_COMMAND=npx SMOKE_ARGS='["-y","chrono24-mcp@latest"]' SMOKE_CWD=/tmp npm run smoke
 ```
 
-There are no unit tests yet. Do NOT add live-network tests to CI: GitHub runners' IPs are blocked by Cloudflare. Parser tests must use recorded HTML fixtures if introduced.
+Do NOT add live-network tests to CI: GitHub runners' IPs are blocked by Cloudflare. Parser tests use recorded HTML fixtures in test/fixtures/.
 
 ## Architecture
 
 ```
-src/index.ts           MCP server entry: registers 10 tools via registerTool (readOnlyHint annotations, output schemas + structuredContent), parsed-result caching, not-found detection, disk-persisted taxonomy, graceful shutdown (signals + stdin close)
+src/index.ts           MCP server entry: registers 18 tools + 3 prompts via registerTool/registerPrompt (readOnlyHint annotations, output schemas + structuredContent), parsed-result caching, not-found detection, disk-persisted taxonomy, graceful shutdown (signals + stdin close)
 src/fetcher.ts         Playwright-core fetcher: strict request serialization (createSerializer mutex - concurrent MCP tool calls share one page), persistent Chrome profile, memoized launch, crash recovery via context close listener, status-aware challenge sniffing, warmup-on-demand retry, politeness delay, stale SingletonLock recovery, in-page fetchJson for same-origin JSON APIs
 src/parsers/search.ts  Search URL builder + listing-card parser (current markup era), facet param allowlist, locale-aware price parsing (parseLocalizedNumber)
 src/parsers/detail.ts  Detail page parser: schema.org Product JSON-LD + spec table; hasDetailContent detects removed listings
@@ -68,6 +68,9 @@ test/fetcher.test.ts   Serializer (request mutex) behavior
 - Dealer ratings JSON is fetched in-page (`page.evaluate(fetch)` with credentials) so it inherits the Cloudflare-cleared cookies; shape: `{dealerRatingModels[], paging{total,filteredTotal,offset}, ratingStarsFilter[]}`. `ratingStarsFilter` holds labels only (no counts); the endpoint accepts `stars=1..5`, but `sorting` only accepts `Relevance` - every other value (Newest/Date/etc.) returns HTTP 400 (probed live 2026-09). `get_dealer_rating_summary` reconstructs the exact star histogram from five per-star `filteredTotal` requests - there is no cheaper aggregate source (detail pages render dealer ratings client-side, and dealer profile pages expose no static aggregate).
 - No per-request currency: `currencyId` is dropped in the search redirect and Chrono24 pins currency to the browser session cookie, so a per-request override would silently return the session currency and could flip the session for later calls (verified live 2026-09). Currency stays env-level (`CURRENCY_ID`).
 - Price development / trend charts on detail pages are fully client-rendered - no static JSON to parse (probed 2026-09).
+- The shipping-country-selector ajax fragment (`/search/detail/shipping-country-selector.htm?ajax=1`) returns only the country picker UI - no shipping costs, even with `&country=XX` (probed 2026-09). Availability + ships-within come from the detail page itself instead.
+- Saved searches persist in `<profileDir>/chrono24-saved-searches.json` via diskStore; `check_saved_searches` diffs against per-search seenIds (capped at 600).
+- `get_price_stats sample:'spread'` and `find_deals` interpolate population percentiles from first/middle/last price-sorted pages (`estimateStats`); the cheapest-60 sample stays the 1-request default.
 - A sold/removed listing serves a page without the JSON-LD Product / spec table (or redirects away from `--id<ID>.htm`); `hasDetailContent` + the finalUrl check turn that into a NotFoundError instead of an empty "success".
 - Search URLs redirect to canonical brand/model pages (`/search/index.htm?...` -> `/rolex/submariner--mod1.htm?...`); always parse whatever page lands.
 - Pagination: the param is the lowercase `showpage` (Chrono24 ignores `showPage`), and the `/search/index.htm` redirect strips paging params entirely - page N must be requested at the canonical (post-redirect) URL with the original params + `showpage=N` (`pagedSearch` in index.ts does the two-step; verified live 2026-09). Dealer inventory (customerId) does not redirect, but goes through the same path for uniformity.

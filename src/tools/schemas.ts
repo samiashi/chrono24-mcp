@@ -88,6 +88,13 @@ export const getPriceStatsInput = {
   year: z.number().int().optional(),
   countries: z.array(z.string().length(2)).max(10).optional(),
   facets: z.record(z.string(), z.string()).optional().describe("Facet filters, see list_filters"),
+  sample: z
+    .enum(["cheapest", "spread"])
+    .optional()
+    .default("cheapest")
+    .describe(
+      "'cheapest' (1 request, lower-tail biased when >60 match) or 'spread' (up to 3 requests, ~8s more, full-range percentile estimate)",
+    ),
 };
 
 export const getDealerListingsInput = {
@@ -173,6 +180,8 @@ const watchDetailShape = {
   caseDiameter: z.string(),
   gender: z.string(),
   scope: z.string(),
+  availability: z.string().describe("e.g. 'Item is in stock' - empty when the page does not say"),
+  shipsWithin: z.string().optional().describe("Shipping estimate, e.g. '1 - 3 days'"),
   description: z.string(),
   location: z.string(),
   images: z.array(z.string()),
@@ -236,6 +245,17 @@ export const listFiltersOutput = {
   note: z.string().optional(),
 };
 
+const priceStatsObject = z.object({
+  sampleSize: z.number(),
+  min: z.number(),
+  p10: z.number(),
+  p25: z.number(),
+  median: z.number(),
+  p75: z.number(),
+  p90: z.number(),
+  max: z.number(),
+});
+
 export const getPriceStatsOutput = {
   scope: z.object({
     query: z.string().nullable(),
@@ -246,21 +266,13 @@ export const getPriceStatsOutput = {
   sourceUrl: z.string(),
   currency: z.string(),
   coverage: z
-    .enum(["full", "cheapest-60"])
+    .enum(["full", "cheapest-60", "spread-sampled"])
     .nullable()
-    .describe("'full' when every matching listing was sampled; 'cheapest-60' means lower-tail bias"),
-  stats: z
-    .object({
-      sampleSize: z.number(),
-      min: z.number(),
-      p10: z.number(),
-      p25: z.number(),
-      median: z.number(),
-      p75: z.number(),
-      p90: z.number(),
-      max: z.number(),
-    })
-    .nullable(),
+    .describe(
+      "'full': every matching listing sampled; 'cheapest-60': lower-tail bias; 'spread-sampled': percentiles interpolated from first/middle/last price-sorted pages",
+    ),
+  pagesSampled: z.array(z.number()).optional(),
+  stats: priceStatsObject.nullable(),
   cheapest: z.array(listingCard),
   ignoredFacets,
   note: z.string(),
@@ -306,4 +318,192 @@ export const getDealerRatingSummaryOutput = {
     "2": z.number(),
     "1": z.number(),
   }),
+};
+
+// ---- shared search scope for the composite tools ----
+
+const scopeFields = {
+  query: z.string().optional().describe("Free-text scope, e.g. 'Rolex Submariner'"),
+  manufacturerIds: z.string().optional().describe("Brand id from list_brands"),
+  models: z.string().optional().describe("Model id from find_models"),
+  referenceNumber: z.string().optional().describe("Reference number, e.g. '116610lv'"),
+  priceFrom: z.number().int().optional(),
+  priceTo: z.number().int().optional(),
+  condition: z.enum(["new", "used"]).optional(),
+  year: z.number().int().optional(),
+  countries: z.array(z.string().length(2)).max(10).optional(),
+  facets: z.record(z.string(), z.string()).optional().describe("Facet filters, see list_filters"),
+};
+
+export const findDealsInput = {
+  ...scopeFields,
+  maxResults: z.number().int().min(1).max(30).optional().default(10).describe("Max deals to return"),
+};
+
+const dealCard = listingCard.extend({
+  pctBelowMedian: z.number().describe("How far below the market median this listing is priced, in %"),
+  caution: z.string().optional().describe("Set when the price is suspiciously far below market"),
+});
+
+export const findDealsOutput = {
+  totalCount: z.number().nullable(),
+  currency: z.string(),
+  coverage: z.enum(["full", "cheapest-60", "spread-sampled"]).nullable(),
+  stats: priceStatsObject.nullable(),
+  deals: z.array(dealCard).describe("Listings priced at or below the market p25, cheapest first"),
+  ignoredFacets,
+  sourceUrl: z.string(),
+  note: z.string(),
+};
+
+export const searchAllInput = {
+  ...scopeFields,
+  sort: z.enum(["relevance", "price_asc", "price_desc", "newest", "popularity"]).optional().default("newest"),
+  maxPages: z
+    .number()
+    .int()
+    .min(1)
+    .max(5)
+    .optional()
+    .default(3)
+    .describe("Pages to aggregate (60 listings each, one polite ~4s request per page)"),
+};
+
+export const searchAllOutput = {
+  totalCount: z.number().nullable(),
+  pagesFetched: z.number(),
+  truncated: z.boolean().describe("true when more pages exist beyond maxPages"),
+  count: z.number(),
+  currency: z.string(),
+  listings: z.array(listingCard),
+  ignoredFacets,
+  sourceUrl: z.string(),
+  note: z.string().optional(),
+};
+
+export const valueCollectionInput = {
+  items: z
+    .array(
+      z.object({
+        label: z.string().optional().describe("Your name for this piece, echoed back"),
+        query: z.string().optional(),
+        referenceNumber: z.string().optional(),
+        manufacturerIds: z.string().optional(),
+        models: z.string().optional(),
+        condition: z.enum(["new", "used"]).optional(),
+        year: z.number().int().optional(),
+      }),
+    )
+    .min(1)
+    .max(10)
+    .describe("One entry per watch; each needs at least one scope field. One polite request per item"),
+};
+
+const valuationEntry = z.object({
+  label: z.string(),
+  totalCount: z.number().nullable(),
+  coverage: z.enum(["full", "cheapest-60"]).nullable(),
+  stats: priceStatsObject.nullable(),
+  error: z.string().optional(),
+});
+
+export const valueCollectionOutput = {
+  currency: z.string(),
+  items: z.array(valuationEntry),
+  totals: z.object({
+    itemsPriced: z.number(),
+    sumOfMedians: z.number().nullable(),
+    sumOfP25: z.number().nullable(),
+    sumOfP75: z.number().nullable(),
+  }),
+  note: z.string(),
+};
+
+// ---- saved searches ----
+
+const savedSearchName = z
+  .string()
+  .regex(/^[\w][\w &'()+.-]{0,63}$/)
+  .describe("Short handle for this saved search, e.g. 'speedy-under-4k'");
+
+export const saveSearchInput = {
+  name: savedSearchName,
+  ...scopeFields,
+  note: z.string().max(500).optional().describe("Free-form reminder of why this search exists"),
+};
+
+export const saveSearchOutput = {
+  name: z.string(),
+  totalCount: z.number().nullable(),
+  seeded: z
+    .number()
+    .describe("Listings marked as already seen; check_saved_searches reports only newer ones"),
+  replaced: z.boolean(),
+  note: z.string(),
+};
+
+export const listSavedSearchesInput = {};
+
+export const listSavedSearchesOutput = {
+  count: z.number(),
+  searches: z.array(
+    z.object({
+      name: z.string(),
+      params: z.record(z.string(), z.unknown()),
+      note: z.string().optional(),
+      createdAt: z.string(),
+      lastCheckedAt: z.string(),
+      seenCount: z.number(),
+    }),
+  ),
+};
+
+export const checkSavedSearchesInput = {
+  name: savedSearchName.optional().describe("Check just this saved search; omit to check all"),
+};
+
+export const checkSavedSearchesOutput = {
+  checked: z.number(),
+  results: z.array(
+    z.object({
+      name: z.string(),
+      totalCount: z.number().nullable(),
+      newCount: z.number(),
+      newListings: z.array(listingCard).describe("Up to 20 listings not seen on any previous check"),
+      previousCheckAt: z.string(),
+      error: z.string().optional(),
+    }),
+  ),
+  note: z.string(),
+};
+
+export const deleteSavedSearchInput = {
+  name: savedSearchName,
+};
+
+export const deleteSavedSearchOutput = {
+  deleted: z.boolean(),
+  name: z.string(),
+  note: z.string().optional(),
+};
+
+// ---- server status ----
+
+export const serverStatusInput = {};
+
+export const serverStatusOutput = {
+  version: z.string(),
+  uptimeS: z.number(),
+  browser: z.object({
+    running: z.boolean(),
+    channel: z.enum(["chrome", "chromium"]).nullable(),
+    headless: z.boolean(),
+    lastRequestAgoS: z.number().nullable(),
+  }),
+  cacheEntries: z.number(),
+  taxonomyDiskFresh: z.boolean(),
+  savedSearches: z.number(),
+  requestDelayMs: z.number(),
+  baseUrl: z.string(),
+  currency: z.string(),
 };

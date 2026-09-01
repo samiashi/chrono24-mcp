@@ -19,7 +19,7 @@ import {
   resolveBrand,
 } from "../src/parsers/taxonomy.js";
 import { parseRatings } from "../src/parsers/ratings.js";
-import { computeStats } from "../src/parsers/stats.js";
+import { computeStats, estimateStats } from "../src/parsers/stats.js";
 
 const fixture = (name: string) => readFileSync(`test/fixtures/${name}`, "utf8");
 
@@ -177,6 +177,11 @@ describe("detail parser", () => {
     expect(hasDetailContent(detail)).toBe(true);
   });
 
+  it("surfaces availability and the ships-within estimate", () => {
+    expect(detail.availability.length).toBeGreaterThan(0);
+    expect(detail.shipsWithin).toMatch(/\d+.*days?/i);
+  });
+
   it("flags a page with no product data as empty (removed listing)", () => {
     const empty = parseDetail(
       "<html><body><p>Nothing to see here, just a redirect target.</p></body></html>",
@@ -326,6 +331,39 @@ describe("price stats", () => {
 
   it("returns null for empty input", () => {
     expect(computeStats([])).toBeNull();
+  });
+});
+
+describe("spread-sampled stats estimation", () => {
+  const page = (pageNo: number, startPrice: number) =>
+    Array.from({ length: 60 }, (_, i) => ({ rank: (pageNo - 1) * 60 + i + 1, price: startPrice + i }));
+
+  it("interpolates population percentiles from first/middle/last pages", () => {
+    const samples = [...page(1, 100), ...page(3, 500), ...page(5, 900)];
+    const stats = estimateStats(samples, 300)!;
+    expect(stats.sampleSize).toBe(180);
+    expect(stats.min).toBe(100);
+    expect(stats.max).toBe(959);
+    expect(stats.p10).toBeGreaterThanOrEqual(125);
+    expect(stats.p10).toBeLessThanOrEqual(135);
+    expect(stats.median).toBeGreaterThanOrEqual(525);
+    expect(stats.median).toBeLessThanOrEqual(535);
+    expect(stats.p90).toBeGreaterThanOrEqual(925);
+    expect(stats.p90).toBeLessThanOrEqual(935);
+    expect(stats.p25).toBeLessThanOrEqual(stats.median);
+    expect(stats.median).toBeLessThanOrEqual(stats.p75);
+  });
+
+  it("interpolates across the gaps between sampled pages", () => {
+    const samples = [...page(1, 100), ...page(5, 900)];
+    const stats = estimateStats(samples, 300)!;
+    // rank 150 sits mid-gap between rank 60 (price 159) and rank 241 (price 900)
+    expect(stats.median).toBeGreaterThan(159);
+    expect(stats.median).toBeLessThan(900);
+  });
+
+  it("returns null with no samples", () => {
+    expect(estimateStats([], 100)).toBeNull();
   });
 });
 
