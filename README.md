@@ -9,10 +9,16 @@
 Search listings, shortlist by price/location/seller type, then pull full watch details (reference, movement, caliber, box & papers, dealer info, photos) without leaving your chat.
 
 ```
-search_listings("Rolex Submariner", { sort: "price_asc" })
-  -> 60 cards, totalCount 9145, USD prices
+find_deals("Omega Speedmaster Professional")
+  -> market median $6,850, 7 listings at or below p25, best 31% under median
 get_watch("48091925")
-  -> Rolex Submariner Date, ref 16610, $10,307, caliber 3135, box+papers, 16 photos
+  -> Rolex Submariner Date, ref 16610, $10,307, caliber 3135, box+papers, in stock, ships 1-3 days
+get_dealer_rating_summary(dealerId)
+  -> 4.83 stars across 10,128 reviews (8,895 five-star / 64 one-star)
+get_model_guide("Rolex", "Submariner")
+  -> history, price guidance and Chrono24's per-reference price table (6538 "James Bond" ~$148,000)
+save_search("speedy-under-4k", { query: "Omega Speedmaster", priceTo: 4000 })
+  -> check_saved_searches later reports only listings that appeared since
 ```
 
 ## How it works

@@ -97,14 +97,15 @@ const require = createRequire(import.meta.url);
 const VERSION: string = require("../package.json").version;
 
 const INSTRUCTIONS = [
-  "Tools for the Chrono24 watch marketplace (search + listing details).",
-  "Requests run through a real browser and are deliberately slow (~3.5s spacing) to avoid blocking; expect several seconds per uncached call.",
+  "Tools for the Chrono24 watch marketplace: search, listing details and photos, dealer vetting, price analytics, buying guides, and persistent trackers.",
+  "Requests run through a real browser and are deliberately slow (~3.5s spacing) to avoid blocking; expect several seconds per uncached call. Long calls emit progress notifications.",
   "Prices are pinned to the configured currency (default USD).",
-  "Workflow: search_listings first, then get_watch or get_watches on a shortlist of ids (batch capped at " +
+  "Shortcuts for common questions: 'good deal on X' -> find_deals; 'fair price for X' -> get_price_stats (sample:'spread' for full-range); 'about the X model / which ref' -> get_model_guide; 'trust this seller?' -> get_dealer_rating_summary; 'alert me about new/changed listings' -> save_search / watch_listing.",
+  "General workflow: search_listings, then get_watch or get_watches (batch capped at " +
     config.maxBatch +
-    ").",
+    ") on a shortlist; get_watch_photos to visually inspect condition.",
   "Empty result sets are valid outcomes, not errors. A not-found error on get_watch means the listing was sold or removed.",
-  "On Cloudflare errors wait ~30s and retry once; if it persists ask the user to set HEADLESS=false.",
+  "The first request of a session may take 60-120s if a Cloudflare challenge must clear; on challenge errors wait ~30s and retry once, and if it persists ask the user to set HEADLESS=false.",
 ].join(" ");
 
 const server = new McpServer({ name: "chrono24", version: VERSION }, { instructions: INSTRUCTIONS });
