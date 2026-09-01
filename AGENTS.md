@@ -41,6 +41,7 @@ src/parsers/taxonomy.ts  Brand list (manufacturerIds select), model catalog (--m
 src/parsers/ratings.ts Dealer ratings JSON normalizer (totals, filteredTotal, star filters)
 src/parsers/stats.ts   Price percentile stats
 src/cache.ts           TTL + LRU cache (default 200 entries; search 180s, detail 1800s, taxonomy 86400s) - stores parsed payloads, never raw HTML
+src/diskStore.ts       Generic keyed JSON disk cache (taxonomy, per-brand models, probed UA - all inside the profile dir)
 src/config.ts          Env-var config (numeric envs validated via numFrom; garbage falls back to defaults)
 src/tools/schemas.ts   Zod input AND output schemas (single source of truth for tool contracts)
 test/parsers.test.ts   Offline vitest suite over recorded fixtures - keep green, extend when parsers change

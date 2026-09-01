@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { TtlCache } from "./cache.js";
+import { diskRead, diskWrite } from "./diskStore.js";
 import { config } from "./config.js";
 import { Fetcher, type FetchResult } from "./fetcher.js";
 import {
@@ -86,10 +88,28 @@ type ToolResult = {
   isError?: boolean;
 };
 
+// compact JSON: the text block is what LLM clients read - pretty-printing
+// adds ~25% pure-whitespace tokens on 60-card search payloads
 const ok = (data: object): ToolResult => ({
-  content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+  content: [{ type: "text", text: JSON.stringify(data) }],
   structuredContent: data as Record<string, unknown>,
 });
+
+type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+// lets clients with resetTimeoutOnProgress survive long calls (batches,
+// rating summaries, challenged cold starts); silently a no-op when the
+// client did not request progress
+function reportProgress(extra: ToolExtra, progress: number, total: number, message: string) {
+  const progressToken = extra._meta?.progressToken;
+  if (progressToken === undefined) return;
+  void extra
+    .sendNotification({
+      method: "notifications/progress",
+      params: { progressToken, progress, total, message },
+    })
+    .catch(() => {});
+}
 
 const fail = (message: string, hint?: string): ToolResult => ({
   isError: true,
@@ -160,7 +180,7 @@ function pageMeta(parsed: SearchResult): { totalPages: number | null; hasMore: b
 // Page 1 goes through /search/index.htm (which may redirect to a canonical
 // brand/model page); deeper pages must be requested at that canonical URL
 // with the lowercase showpage param, or Chrono24 silently serves page 1.
-async function pagedSearch(opts: SearchOptions, page: number): Promise<SearchResult> {
+async function pagedSearch(opts: SearchOptions, page: number, extra?: ToolExtra): Promise<SearchResult> {
   const page1Url = buildSearchUrl(opts);
   const first = await cachedParse(`search:${page1Url}`, config.searchCacheTtlS, page1Url, (res) =>
     parseSearchResults(res.html, res.finalUrl, 1),
@@ -172,6 +192,7 @@ async function pagedSearch(opts: SearchOptions, page: number): Promise<SearchRes
   if (totalPages !== null && page > totalPages) {
     return { totalCount: first.totalCount, count: 0, page, listings: [], sourceUrl: first.sourceUrl };
   }
+  if (extra) reportProgress(extra, 1, 2, `resolved canonical page, fetching page ${page}`);
   const pageUrl = buildPagedUrl(first.sourceUrl, page1Url, page);
   return cachedParse(`search:${pageUrl}`, config.searchCacheTtlS, pageUrl, (res) =>
     parseSearchResults(res.html, res.finalUrl, page),
@@ -207,7 +228,7 @@ server.registerTool(
     outputSchema: searchOutput,
     annotations: READ_ONLY,
   },
-  async (args) => {
+  async (args, extra) => {
     try {
       const { applied, ignored } = partitionFacets(args.facets);
       const parsed = await pagedSearch(
@@ -226,6 +247,7 @@ server.registerTool(
           certified: args.certified,
         },
         args.page ?? 1,
+        extra,
       );
       const listings = args.limit ? parsed.listings.slice(0, args.limit) : parsed.listings;
       const meta = pageMeta(parsed);
@@ -329,16 +351,17 @@ server.registerTool(
     outputSchema: getWatchesOutput,
     annotations: READ_ONLY,
   },
-  async (args) => {
+  async (args, extra) => {
     try {
       const ids = [...new Set(args.ids)];
       const results: Array<WatchPayload & { error?: string }> = [];
-      for (const id of ids) {
+      for (const [i, id] of ids.entries()) {
         try {
           results.push(await fetchWatch(id));
         } catch (err) {
           results.push(emptyDetail(id, err instanceof Error ? err.message : String(err)));
         }
+        reportProgress(extra, i + 1, ids.length, `fetched listing ${id}`);
       }
       return ok({
         count: results.length,
@@ -358,52 +381,29 @@ interface BroadTaxonomy {
   facets: Facet[];
 }
 
-// lives inside the profile dir so custom PROFILE_DIR setups don't write to an
-// unexpected parent directory; Chrome ignores unknown files in its user-data-dir
+// these live inside the profile dir so custom PROFILE_DIR setups don't write
+// to an unexpected parent directory; Chrome ignores unknown files in its
+// user-data-dir
 const TAXONOMY_DISK = path.join(config.profileDir, "chrono24-taxonomy.json");
-
-function readTaxonomyDisk(): (BroadTaxonomy & { remainingS: number }) | null {
-  try {
-    const raw = JSON.parse(fs.readFileSync(TAXONOMY_DISK, "utf8")) as {
-      fetchedAt?: unknown;
-      brands?: unknown;
-      facets?: unknown;
-    };
-    const ageS = (Date.now() - Number(raw.fetchedAt)) / 1000;
-    if (!Number.isFinite(ageS) || ageS < 0 || ageS >= config.taxonomyCacheTtlS) return null;
-    if (!Array.isArray(raw.brands) || raw.brands.length < 100 || !Array.isArray(raw.facets)) return null;
-    return {
-      brands: raw.brands as Brand[],
-      facets: raw.facets as Facet[],
-      remainingS: config.taxonomyCacheTtlS - ageS,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeTaxonomyDisk(value: BroadTaxonomy) {
-  try {
-    fs.mkdirSync(path.dirname(TAXONOMY_DISK), { recursive: true });
-    fs.writeFileSync(TAXONOMY_DISK, JSON.stringify({ fetchedAt: Date.now(), ...value }));
-  } catch (err) {
-    console.error(`[taxonomy] disk cache write failed: ${err instanceof Error ? err.message : err}`);
-  }
-}
+const MODELS_DISK = path.join(config.profileDir, "chrono24-models.json");
 
 async function cachedBroadTaxonomy(): Promise<BroadTaxonomy> {
   const hit = cache.get<BroadTaxonomy>("taxonomy:broad");
   if (hit) return hit;
-  const disk = readTaxonomyDisk();
-  if (disk) {
-    const value = { brands: disk.brands, facets: disk.facets };
-    cache.set("taxonomy:broad", value, disk.remainingS);
-    return value;
+  const disk = diskRead<BroadTaxonomy>(TAXONOMY_DISK, "broad", config.taxonomyCacheTtlS);
+  if (
+    disk &&
+    Array.isArray(disk.value.brands) &&
+    disk.value.brands.length >= 100 &&
+    Array.isArray(disk.value.facets)
+  ) {
+    cache.set("taxonomy:broad", disk.value, disk.remainingS);
+    return disk.value;
   }
   const res = await fetchOk(BROAD_SEARCH_URL);
   const value = { brands: parseBrands(res.html), facets: parseFacets(res.html) };
   cache.set("taxonomy:broad", value, config.taxonomyCacheTtlS);
-  writeTaxonomyDisk(value);
+  diskWrite(TAXONOMY_DISK, "broad", value, config.taxonomyCacheTtlS);
   return value;
 }
 
@@ -449,13 +449,19 @@ server.registerTool(
           note: `No brand matching "${args.brand}". Call list_brands to see available names.`,
         });
       }
-      const cacheKey = `taxonomy:models:${brand.id}`;
-      const hit = cache.get<{
+      type ModelsPayload = {
         brand: Brand & { slug: string };
         slug: string;
         models: ReturnType<typeof parseModels>;
-      }>(cacheKey);
+      };
+      const cacheKey = `taxonomy:models:${brand.id}`;
+      const hit = cache.get<ModelsPayload>(cacheKey);
       if (hit) return ok({ ...hit, count: hit.models.length });
+      const disk = diskRead<ModelsPayload>(MODELS_DISK, brand.id, config.taxonomyCacheTtlS);
+      if (disk && Array.isArray(disk.value.models) && disk.value.models.length > 0 && disk.value.slug) {
+        cache.set(cacheKey, disk.value, disk.remainingS);
+        return ok({ ...disk.value, count: disk.value.models.length });
+      }
 
       const res = await fetchOk(
         `${config.baseUrl}/search/index.htm?dosearch=true&manufacturerIds=${brand.id}&sortorder=5&pageSize=60&currencyId=${config.currencyId}`,
@@ -473,6 +479,7 @@ server.registerTool(
       const models = parseModels(html, slug, brand.name);
       const payload = { brand: { ...brand, slug }, slug, models };
       cache.set(cacheKey, payload, config.taxonomyCacheTtlS);
+      if (models.length > 0) diskWrite(MODELS_DISK, brand.id, payload, config.taxonomyCacheTtlS);
       return ok({ ...payload, count: models.length });
     } catch (err) {
       return failFrom(err);
@@ -598,7 +605,7 @@ server.registerTool(
     outputSchema: getDealerListingsOutput,
     annotations: READ_ONLY,
   },
-  async (args) => {
+  async (args, extra) => {
     try {
       const parsed = await pagedSearch(
         {
@@ -607,6 +614,7 @@ server.registerTool(
           pageSize: 60,
         },
         args.page ?? 1,
+        extra,
       );
       const meta = pageMeta(parsed);
       return ok({
@@ -669,13 +677,13 @@ server.registerTool(
     outputSchema: getDealerRatingSummaryOutput,
     annotations: READ_ONLY,
   },
-  async (args) => {
+  async (args, extra) => {
     try {
       const cacheKey = `ratingsummary:${args.dealerId}`;
       const hit = cache.get<Record<string, unknown>>(cacheKey);
       if (hit) return ok(hit);
       const histogram: Record<string, number> = {};
-      for (const stars of [5, 4, 3, 2, 1]) {
+      for (const [i, stars] of [5, 4, 3, 2, 1].entries()) {
         const res = await fetcher.fetchJson(
           `${config.baseUrl}/api/merchant/ratings.json?dealerId=${args.dealerId}&size=1&offset=0&stars=${stars}&sorting=Relevance`,
         );
@@ -688,6 +696,7 @@ server.registerTool(
         const parsed = parseRatingsSafe(res.body);
         if (!parsed) return failNonJsonRatings();
         histogram[String(stars)] = parsed.filteredTotal;
+        reportProgress(extra, i + 1, 5, `counted ${stars}-star reviews`);
       }
       const total = Object.values(histogram).reduce((a, b) => a + b, 0);
       const weighted = [5, 4, 3, 2, 1].reduce((sum, s) => sum + s * histogram[String(s)], 0);

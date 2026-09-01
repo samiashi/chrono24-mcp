@@ -2,7 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { config } from "./config.js";
+import { diskRead, diskWrite } from "./diskStore.js";
 import { chromeUserAgent, FALLBACK_CHROME_MAJOR } from "./userAgent.js";
+
+const UA_DISK = path.join(config.profileDir, "chrono24-ua.json");
+// re-probe weekly so the UA major tracks browser updates without paying the
+// ~1s probe launch on every cold start
+const UA_TTL_S = 7 * 86400;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -81,12 +87,21 @@ export class Fetcher {
     const key = channel ?? "bundled";
     const cached = this.headlessUa.get(key);
     if (cached) return cached;
+    const disk = diskRead<string>(UA_DISK, key, UA_TTL_S);
+    if (disk && /^Mozilla\/5\.0 .*Chrome\/\d+/.test(disk.value)) {
+      this.headlessUa.set(key, disk.value);
+      return disk.value;
+    }
     let major = FALLBACK_CHROME_MAJOR;
+    let probed = false;
     try {
       const probe = await chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
       const m = probe.version().match(/^(\d+)\./);
       await probe.close();
-      if (m) major = Number(m[1]);
+      if (m) {
+        major = Number(m[1]);
+        probed = true;
+      }
     } catch (err) {
       console.error(
         `[fetcher] browser version probe failed (${err instanceof Error ? err.message : err}), assuming Chrome/${major}`,
@@ -94,6 +109,7 @@ export class Fetcher {
     }
     const ua = chromeUserAgent(major);
     this.headlessUa.set(key, ua);
+    if (probed) diskWrite(UA_DISK, key, ua, UA_TTL_S);
     return ua;
   }
 

@@ -17,7 +17,7 @@ get_watch("48091925")
 
 ## How it works
 
-Chrono24 has no public API and sits behind a Cloudflare managed challenge that blocks plain HTTP (403). This server drives a **real Chrome via Playwright with a persistent profile**, so the Cloudflare clearance cookie is earned once and reused across restarts. Requests are serialized with ~3.5s spacing plus jitter to stay polite; responses are cached (search 3 min, details 30 min).
+Chrono24 has no public API and sits behind a Cloudflare managed challenge that blocks plain HTTP (403). This server drives a **real Chrome via Playwright with a persistent profile**, so the Cloudflare clearance cookie is earned once and reused across restarts. Requests are serialized with ~3.5s spacing plus jitter to stay polite; responses are cached (search 3 min, details 30 min), and brand/model taxonomy persists to disk so restarts stay warm. Long-running calls (`get_watches`, `get_dealer_rating_summary`, paged searches) emit MCP progress notifications - enable `resetTimeoutOnProgress` in clients that support it.
 
 ## Setup
 
