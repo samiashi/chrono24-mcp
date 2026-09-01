@@ -14,8 +14,8 @@ export const searchInput = {
     .describe("Chrono24 numeric brand id (Rolex=221). Optional; query text usually suffices"),
   models: z.string().optional().describe("Chrono24 numeric model id (digits from --mod URLs)"),
   referenceNumber: z.string().optional().describe("Reference number filter, e.g. '116610lv'"),
-  priceFrom: z.number().int().optional().describe("Minimum price in USD"),
-  priceTo: z.number().int().optional().describe("Maximum price in USD"),
+  priceFrom: z.number().int().optional().describe("Minimum price"),
+  priceTo: z.number().int().optional().describe("Maximum price"),
   condition: z.enum(["new", "used"]).optional().describe("Condition filter"),
   year: z.number().int().optional().describe("Year of production filter"),
   countries: z
@@ -40,7 +40,7 @@ export const searchInput = {
     ),
   certified: z.boolean().optional().describe("Only Chrono24 Certified listings"),
   facets: z
-    .record(z.string())
+    .record(z.string(), z.string())
     .optional()
     .describe(
       'Extra facet filters as param->value pairs, e.g. {"caseMaterials": "4", "braceletMaterial": "407"}. Discover names/values via list_filters',
@@ -82,12 +82,12 @@ export const getPriceStatsInput = {
   manufacturerIds: z.string().optional().describe("Brand id from list_brands"),
   models: z.string().optional().describe("Model id from find_models"),
   referenceNumber: z.string().optional().describe("Reference number filter"),
-  priceFrom: z.number().int().optional().describe("Minimum price in USD"),
-  priceTo: z.number().int().optional().describe("Maximum price in USD"),
+  priceFrom: z.number().int().optional().describe("Minimum price"),
+  priceTo: z.number().int().optional().describe("Maximum price"),
   condition: z.enum(["new", "used"]).optional(),
   year: z.number().int().optional(),
   countries: z.array(z.string().length(2)).max(10).optional(),
-  facets: z.record(z.string()).optional().describe("Facet filters, see list_filters"),
+  facets: z.record(z.string(), z.string()).optional().describe("Facet filters, see list_filters"),
 };
 
 export const getDealerListingsInput = {
@@ -106,14 +106,176 @@ export const getDealerRatingsInput = {
     .describe("Dealer id from get_watch's sellerIds (NOT the customerId) - powers reviews"),
   size: z.number().int().min(1).max(50).optional().default(10).describe("Ratings per page (max 50)"),
   offset: z.number().int().min(0).optional().default(0).describe("Offset for paging through ratings"),
+  stars: z
+    .number()
+    .int()
+    .min(1)
+    .max(5)
+    .optional()
+    .describe("Only reviews with this star rating (1-5); omit for all"),
 };
 
-export type SearchArgs = z.infer<z.ZodObject<typeof searchInput>>;
-export type GetWatchArgs = z.infer<z.ZodObject<typeof getWatchInput>>;
-export type GetWatchesArgs = z.infer<z.ZodObject<typeof getWatchesInput>>;
-export type ListBrandsArgs = z.infer<z.ZodObject<typeof listBrandsInput>>;
-export type FindModelsArgs = z.infer<z.ZodObject<typeof findModelsInput>>;
-export type ListFiltersArgs = z.infer<z.ZodObject<typeof listFiltersInput>>;
-export type GetPriceStatsArgs = z.infer<z.ZodObject<typeof getPriceStatsInput>>;
-export type GetDealerListingsArgs = z.infer<z.ZodObject<typeof getDealerListingsInput>>;
-export type GetDealerRatingsArgs = z.infer<z.ZodObject<typeof getDealerRatingsInput>>;
+export const getDealerRatingSummaryInput = {
+  dealerId: z.string().regex(/^\d+$/).describe("Dealer id from get_watch's sellerIds (NOT the customerId)"),
+};
+
+// ---- output schemas (structuredContent) ----
+
+const listingCard = z.object({
+  id: z.string().nullable(),
+  url: z.string(),
+  brandModel: z.string(),
+  detail: z.string(),
+  priceDisplay: z.string().nullable(),
+  priceValue: z.number().nullable(),
+  negotiable: z.boolean(),
+  location: z.string().nullable(),
+  sellerType: z.enum(["dealer", "private"]).nullable(),
+  badge: z.string().nullable(),
+  imageUrl: z.string().nullable(),
+});
+
+const searchPage = {
+  totalCount: z.number().nullable(),
+  count: z.number(),
+  page: z.number(),
+  totalPages: z.number().nullable(),
+  hasMore: z.boolean().nullable(),
+  currency: z.string(),
+  listings: z.array(listingCard),
+  sourceUrl: z.string(),
+};
+
+export const searchOutput = searchPage;
+
+const watchDetailShape = {
+  id: z.string().optional(),
+  canonicalUrl: z.string().optional(),
+  brand: z.string(),
+  model: z.string(),
+  reference: z.string(),
+  priceDisplay: z.string(),
+  priceValue: z.number().nullable(),
+  currency: z.string(),
+  condition: z.string(),
+  year: z.string(),
+  movement: z.string(),
+  caseMaterial: z.string(),
+  caseDiameter: z.string(),
+  gender: z.string(),
+  scope: z.string(),
+  description: z.string(),
+  location: z.string(),
+  images: z.array(z.string()),
+  specs: z.record(z.string(), z.string()),
+};
+
+const sellerIds = z
+  .object({ customerId: z.string().nullable(), dealerId: z.string().nullable() })
+  .optional()
+  .describe("customerId powers get_dealer_listings; dealerId powers get_dealer_ratings");
+
+export const getWatchOutput = {
+  ...watchDetailShape,
+  sellerIds,
+};
+
+export const getWatchesOutput = {
+  count: z.number(),
+  watches: z.array(z.object({ ...watchDetailShape, sellerIds, error: z.string().optional() })),
+  note: z.string(),
+};
+
+export const listBrandsOutput = {
+  count: z.number(),
+  brands: z.array(z.object({ id: z.string(), name: z.string() })),
+};
+
+export const findModelsOutput = {
+  count: z.number(),
+  brand: z.object({ id: z.string(), name: z.string(), slug: z.string().optional() }).optional(),
+  slug: z.string().optional(),
+  models: z.array(z.object({ modelId: z.string(), slug: z.string(), name: z.string() })),
+  note: z.string().optional(),
+};
+
+const facetOption = z.object({ value: z.string(), label: z.string() });
+
+export const listFiltersOutput = {
+  count: z.number(),
+  facets: z.array(z.object({ name: z.string(), options: z.array(facetOption) })).optional(),
+  name: z.string().optional(),
+  options: z.array(facetOption).optional(),
+  note: z.string().optional(),
+};
+
+export const getPriceStatsOutput = {
+  scope: z.object({
+    query: z.string().nullable(),
+    manufacturerIds: z.string().nullable(),
+    models: z.string().nullable(),
+  }),
+  totalCount: z.number().nullable(),
+  sourceUrl: z.string(),
+  currency: z.string(),
+  coverage: z
+    .enum(["full", "cheapest-60"])
+    .nullable()
+    .describe("'full' when every matching listing was sampled; 'cheapest-60' means lower-tail bias"),
+  stats: z
+    .object({
+      sampleSize: z.number(),
+      min: z.number(),
+      p10: z.number(),
+      p25: z.number(),
+      median: z.number(),
+      p75: z.number(),
+      p90: z.number(),
+      max: z.number(),
+    })
+    .nullable(),
+  cheapest: z.array(listingCard),
+  note: z.string(),
+};
+
+export const getDealerListingsOutput = {
+  customerId: z.string(),
+  ...searchPage,
+};
+
+export const getDealerRatingsOutput = {
+  dealerId: z.string(),
+  total: z.number(),
+  filteredTotal: z.number(),
+  offset: z.number(),
+  count: z.number(),
+  availableStarFilters: z.array(z.string()),
+  ratings: z.array(
+    z.object({
+      author: z.string(),
+      country: z.string(),
+      date: z.string(),
+      watchTitle: z.string(),
+      rating: z.number(),
+      recommendsSeller: z.boolean(),
+      review: z.string(),
+      dealerComment: z.string().optional(),
+    }),
+  ),
+};
+
+export const getDealerRatingSummaryOutput = {
+  dealerId: z.string(),
+  total: z.number(),
+  average: z
+    .number()
+    .nullable()
+    .describe("Weighted average star rating (2 decimals); null when the dealer has no reviews"),
+  histogram: z.object({
+    "5": z.number(),
+    "4": z.number(),
+    "3": z.number(),
+    "2": z.number(),
+    "1": z.number(),
+  }),
+};

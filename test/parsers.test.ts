@@ -2,11 +2,12 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   buildSearchUrl,
+  parseLocalizedNumber,
   parseSearchResults,
   resolveSort,
   FACET_PARAM_ALLOWLIST,
 } from "../src/parsers/search.js";
-import { parseDetail } from "../src/parsers/detail.js";
+import { hasDetailContent, parseDetail } from "../src/parsers/detail.js";
 import {
   brandSlugFromUrl,
   filterBrands,
@@ -74,6 +75,31 @@ describe("search url builder", () => {
     expect(buildSearchUrl({ query: "x" })).not.toContain("showPage");
     expect(buildSearchUrl({ query: "x", page: 3 })).toContain("showPage=3");
   });
+
+  it("supports a per-request currency override", () => {
+    expect(buildSearchUrl({ query: "x" })).toContain("currencyId=USD");
+    expect(buildSearchUrl({ query: "x", currencyId: "EUR" })).toContain("currencyId=EUR");
+  });
+});
+
+describe("localized number parsing", () => {
+  it.each([
+    ["$10,307", 10307],
+    ["10.307 €", 10307],
+    ["1.234.567", 1234567],
+    ["1,234,567", 1234567],
+    ["10,307.50", 10307.5],
+    ["10.307,50", 10307.5],
+    ["245", 245],
+    ["9,140", 9140],
+  ])("parses %s as %d", (input, expected) => {
+    expect(parseLocalizedNumber(input)).toBe(expected);
+  });
+
+  it("returns null when there are no digits", () => {
+    expect(parseLocalizedNumber("")).toBeNull();
+    expect(parseLocalizedNumber(".,")).toBeNull();
+  });
 });
 
 describe("detail parser", () => {
@@ -98,6 +124,28 @@ describe("detail parser", () => {
   it("collects the photo set", () => {
     expect(detail.images.length).toBeGreaterThan(5);
     expect(detail.images[0]).toContain("img.chrono24.com");
+  });
+
+  it("recognizes a real detail page as having content", () => {
+    expect(hasDetailContent(detail)).toBe(true);
+  });
+
+  it("flags a page with no product data as empty (removed listing)", () => {
+    const empty = parseDetail(
+      "<html><body><p>Nothing to see here, just a redirect target.</p></body></html>",
+    );
+    expect(hasDetailContent(empty)).toBe(false);
+  });
+
+  it("accepts a numeric JSON-LD price", () => {
+    const html = `<html><body><script type="application/ld+json">
+      {"@type":"Product","brand":{"name":"Rolex"},"model":"Daytona","sku":"116500",
+       "offers":{"price":34500,"priceCurrency":"USD"}}
+    </script></body></html>`;
+    const d = parseDetail(html);
+    expect(d.priceValue).toBe(34500);
+    expect(d.priceDisplay).toBe("34500 USD");
+    expect(d.currency).toBe("USD");
   });
 });
 
@@ -195,8 +243,14 @@ describe("dealer ratings parser", () => {
 
   it("parses totals and entries", () => {
     expect(result.total).toBeGreaterThan(0);
+    expect(result.filteredTotal).toBe(result.total);
     expect(result.count).toBe(5);
     expect(result.offset).toBe(0);
+  });
+
+  it("lists the available star filters", () => {
+    expect(result.availableStarFilters.length).toBeGreaterThan(0);
+    expect(result.availableStarFilters[0]).toMatch(/star/i);
   });
 
   it("normalizes rating entries", () => {
